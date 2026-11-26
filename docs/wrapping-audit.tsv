@@ -1,0 +1,1030 @@
+file	line	expression	class	guard_or_reason
+selfhost/lower/probes/probe/src/probe.ksnl	12	a.wrapping_add(b)	c	unguarded addition; overflow wraps to small value
+selfhost/lower/probes/probe/src/probe.ksnl	18	i = i.wrapping_add(1u32)	a	guard: while i < n {
+selfhost/lower/src/lower/cx.ksnl	68	Some(v) => lower.cx.set_val(c, *k, v.wrapping_add(1usize))?	d	enclosing for/range bound
+selfhost/lower/src/lower/cx.ksnl	71	i = i.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/lower/src/lower/cx.ksnl	116	out.push(lower.cx.get_val(c, *k).wrapping_sub(1usize))?	c	handle stored +1 (0=none); sub(1) on 0 -> usize::MAX
+selfhost/lower/src/lower/cx.ksnl	188	let cur = lower.cx.get_val(c, *k).wrapping_sub(1usize)	c	handle stored +1 (0=none); sub(1) on 0 -> usize::MAX
+selfhost/lower/src/lower/cx.ksnl	247	i = i.wrapping_add(1usize)	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+selfhost/lower/src/lower/expr.ksnl	88	let slot = lower.cx.get_val(c, loc - 1usize).wrapping_sub(1usize)	c	handle stored +1 (0=none); sub(1) on 0 -> usize::MAX
+selfhost/lower/src/lower/expr.ksnl	347	return lower.expr.wrapping_field(env, c, p, src, (n1, n2, n3), n.b, t)	c	unguarded wrapping_field
+selfhost/lower/src/lower/expr.ksnl	609	let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)	c	handle stored +1 (0=none); sub(1) on 0 -> usize::MAX
+selfhost/lower/src/lower/expr.ksnl	619	let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)	c	handle stored +1 (0=none); sub(1) on 0 -> usize::MAX
+selfhost/lower/src/lower/expr.ksnl	741	bv = lower.cx.get_val(c, loc - 1usize).wrapping_sub(1usize)	c	handle stored +1 (0=none); sub(1) on 0 -> usize::MAX
+selfhost/lower/src/lower/expr.ksnl	806	let bv = lower.cx.get_val(c, k).wrapping_sub(1usize)	c	handle stored +1 (0=none); sub(1) on 0 -> usize::MAX
+selfhost/lower/src/lower/expr.ksnl	986	let mut cur = lower.cx.get_val(c, k).wrapping_sub(1usize)	c	handle stored +1 (0=none); sub(1) on 0 -> usize::MAX
+selfhost/lower/src/lower/expr.ksnl	1116	let a = m == "wrapping_add" || m == "wrapping_sub" || m == "wrapping_mul"	c	unguarded addition; overflow wraps to small value
+selfhost/lower/src/lower/expr.ksnl	1116	let a = m == "wrapping_add" || m == "wrapping_sub" || m == "wrapping_mul"	c	unguarded subtraction; underflow gives huge value
+selfhost/lower/src/lower/expr.ksnl	1116	let a = m == "wrapping_add" || m == "wrapping_sub" || m == "wrapping_mul"	b	hash/PRNG/bit op: lower.expr.is_wrap_op
+selfhost/lower/src/lower/expr.ksnl	1117	a || m == "wrapping_shl" || m == "wrapping_shr"	b	hash/PRNG/bit op: lower.expr.is_wrap_op
+selfhost/lower/src/lower/expr.ksnl	1117	a || m == "wrapping_shl" || m == "wrapping_shr"	b	hash/PRNG/bit op: lower.expr.is_wrap_op
+selfhost/lower/src/lower/expr.ksnl	1634	if meth == "wrapping_sub" {	c	unguarded subtraction; underflow gives huge value
+selfhost/lower/src/lower/expr.ksnl	1636	} else if meth == "wrapping_mul" {	b	hash/PRNG/bit op: lower.expr.mcall
+selfhost/lower/src/lower/expr.ksnl	1638	} else if meth == "wrapping_shl" {	b	hash/PRNG/bit op: lower.expr.mcall
+selfhost/lower/src/lower/expr.ksnl	1640	} else if meth == "wrapping_shr" {	b	hash/PRNG/bit op: lower.expr.mcall
+selfhost/lower/src/lower/expr.ksnl	1644	if meth == "wrapping_shl" || meth == "wrapping_shr" {	b	hash/PRNG/bit op: lower.expr.mcall
+selfhost/lower/src/lower/expr.ksnl	1644	if meth == "wrapping_shl" || meth == "wrapping_shr" {	b	hash/PRNG/bit op: lower.expr.mcall
+selfhost/lower/src/lower/expr.ksnl	2258	slot = lower.cx.get_val(c, loc - 1usize).wrapping_sub(1usize)	c	handle stored +1 (0=none); sub(1) on 0 -> usize::MAX
+selfhost/lower/src/lower/expr.ksnl	2435	let mut cur = lower.cx.get_val(c, k).wrapping_sub(1usize)	c	handle stored +1 (0=none); sub(1) on 0 -> usize::MAX
+selfhost/lower/src/lower/expr.ksnl	2560	let bv = lower.cx.get_val(c, k).wrapping_sub(1usize)	c	handle stored +1 (0=none); sub(1) on 0 -> usize::MAX
+selfhost/lower/src/lower/expr.ksnl	2665	if meth == "wrapping_add" {	c	unguarded addition; overflow wraps to small value
+selfhost/lower/src/lower/expr.ksnl	2667	} else if meth == "wrapping_sub" {	c	unguarded subtraction; underflow gives huge value
+selfhost/lower/src/lower/expr.ksnl	2669	} else if meth == "wrapping_mul" {	b	hash/PRNG/bit op: lower.expr.wrapping
+selfhost/lower/src/lower/expr.ksnl	2671	} else if meth == "wrapping_shl" {	b	hash/PRNG/bit op: lower.expr.wrapping
+selfhost/lower/src/lower/expr.ksnl	2673	} else if meth == "wrapping_shr" {	b	hash/PRNG/bit op: lower.expr.wrapping
+selfhost/lower/src/lower/expr.ksnl	2694	fn lower.expr.wrapping_field(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], names: (&str, &str, &str), args: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub	c	unguarded wrapping_field
+selfhost/lower/src/lower/expr.ksnl	2722	end lower.expr.wrapping_field	c	unguarded wrapping_field
+selfhost/lower/src/lower/inst.ksnl	275	let no = 1_000_000usize + item.wrapping_mul(64usize) + i	b	hash/PRNG/bit op: lower.inst.sig_ty
+selfhost/lower/src/lower/loops.ksnl	306	let hv = lower.cx.get_val(c, loc - 1usize).wrapping_sub(1usize)	c	handle stored +1 (0=none); sub(1) on 0 -> usize::MAX
+selfhost/lower/src/lower/loops.ksnl	374	let hv = lower.cx.get_val(c, loc - 1usize).wrapping_sub(1usize)	c	handle stored +1 (0=none); sub(1) on 0 -> usize::MAX
+selfhost/lower/src/lower/opt.ksnl	89	let owner = types.infer.item_owner(env, item).wrapping_sub(1usize)	c	handle stored +1 (0=none); sub(1) on 0 -> usize::MAX
+selfhost/lower/src/lower/opt.ksnl	298	let v = lower.cx.get_val(c, k).wrapping_sub(1usize)	c	handle stored +1 (0=none); sub(1) on 0 -> usize::MAX
+selfhost/lower/src/lower/opt.ksnl	653	let owner = types.infer.item_owner(env, item).wrapping_sub(1usize)	c	handle stored +1 (0=none); sub(1) on 0 -> usize::MAX
+selfhost/lower/src/lower/opt.ksnl	716	recv = lower.cx.get_val(c, loc - 1usize).wrapping_sub(1usize)	c	handle stored +1 (0=none); sub(1) on 0 -> usize::MAX
+selfhost/lower/src/lower/opt.ksnl	718	let slot = lower.cx.get_val(c, loc - 1usize).wrapping_sub(1usize)	c	handle stored +1 (0=none); sub(1) on 0 -> usize::MAX
+selfhost/lower/src/lower/std_calls.ksnl	350	vs.push(lower.cx.get_val(c, loc - 1usize).wrapping_sub(1usize))?	c	handle stored +1 (0=none); sub(1) on 0 -> usize::MAX
+selfhost/lower/src/lower/tyk.ksnl	900	v = v * 10usize + usize.from_u8(b.wrapping_sub(48u8))	c	unguarded subtraction; underflow gives huge value
+selfhost/lower/src/lower/vec.ksnl	76	let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)	c	handle stored +1 (0=none); sub(1) on 0 -> usize::MAX
+selfhost/lower/src/lower/vec.ksnl	90	let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)	c	handle stored +1 (0=none); sub(1) on 0 -> usize::MAX
+selfhost/lower/src/lower/vec.ksnl	265	recv = lower.cx.get_val(c, loc - 1usize).wrapping_sub(1usize)	c	handle stored +1 (0=none); sub(1) on 0 -> usize::MAX
+selfhost/driver/src/ksnc.ksnl	35	i = i.wrapping_add(1usize)	a	guard: while i < n {
+selfhost/driver/src/ksnc.ksnl	44	i = i.wrapping_add(1usize)	d	counter loop; bounded by loop cond: while i < n {
+selfhost/driver/src/ksnc/clang.ksnl	26	let kind = ksnc.clang.at(i.wrapping_add(1usize))	a	guard: while i < n {
+selfhost/driver/src/ksnc/clang.ksnl	27	let file = ksnc.clang.at(i.wrapping_add(2usize))	a	guard: while i < n {
+selfhost/driver/src/ksnc/clang.ksnl	35	i = i.wrapping_add(3usize)	a	guard: while i < n {
+selfhost/driver/src/ksnc/clang.ksnl	37	exe = ksnc.clang.at(i.wrapping_add(1usize))	a	guard: while i < n {
+selfhost/driver/src/ksnc/clang.ksnl	38	i = i.wrapping_add(2usize)	c	unguarded addition; overflow wraps to small value
+selfhost/driver/src/ksnc/clang.ksnl	41	i = i.wrapping_add(1usize)	d	counter loop; bounded by loop cond: while i < n {
+selfhost/driver/src/ksnc/clang.ksnl	46	i = i.wrapping_add(1usize)	d	counter loop; bounded by loop cond: while i < n {
+selfhost/driver/src/ksnc/front.ksnl	35	i = i.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/driver/src/ksnc/front.ksnl	45	i = i.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/driver/src/ksnc/kcheck.ksnl	12	k = k.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/driver/src/ksnc/kcheck.ksnl	22	k = k.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/driver/src/ksnc/kcheck.ksnl	39	errors = errors.wrapping_add(cx.rep.errors)	c	unguarded addition; overflow wraps to small value
+selfhost/driver/src/ksnc/kcheck.ksnl	44	k = k.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/driver/src/ksnc/kcheck.ksnl	66	i = i.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/driver/src/ksnc/kcheck.ksnl	85	i = i.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/driver/src/ksnc/kcheck.ksnl	119	all.errors = all.errors.wrapping_add(tout.cx.rep.errors)	c	unguarded addition; overflow wraps to small value
+selfhost/driver/src/ksnc/kcheck.ksnl	122	all.errors = all.errors.wrapping_add(eff.errors)	c	unguarded addition; overflow wraps to small value
+selfhost/driver/src/ksnc/kcheck.ksnl	125	all.errors = all.errors.wrapping_add(bor.errors)	c	unguarded addition; overflow wraps to small value
+selfhost/driver/src/ksnc/kfmt.ksnl	30	changed = changed.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/driver/src/ksnc/kir.ksnl	99	nbad = nbad.wrapping_add(1usize)	c	counter +1, not guarded; overflow only after 2^N iterations (low risk)
+selfhost/types/src/types/check.ksnl	48	ar.params = no.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/types/src/types/check.ksnl	117	let sn = parse.ast.get(&p.ast, resolve.ast.item(p, bn.a, cnt.wrapping_sub(1usize)))	c	unguarded subtraction; underflow gives huge value
+selfhost/types/src/types/chk.ksnl	41	cx.rep.errors = cx.rep.errors.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/types/src/types/chk.ksnl	50	found = k.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/types/src/types/env.ksnl	87	Some(ix) => ix.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/types/src/types/env.ksnl	99	Some(ix) => ix.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/types/src/types/env.ksnl	185	file = file.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/types/src/types/env.ksnl	242	if !types.env.item_sig(tab, old.wrapping_sub(1usize)) || sig {	a	guard: if old != 0usize {
+selfhost/types/src/types/infer.ksnl	71	let last = j.wrapping_add(1usize) == cnt	d	enclosing for/range bound
+selfhost/types/src/types/infer.ksnl	116	let item = it.wrapping_sub(1usize)	a	guard: if it != 0usize {
+selfhost/types/src/types/infer.ksnl	126	let enum_item = types.infer.item_owner(env, item).wrapping_sub(1usize)	c	handle stored +1 (0=none); sub(1) on 0 -> usize::MAX
+selfhost/types/src/types/infer.ksnl	139	let lt = types.ty.strip(ar, types.chk.ty_at(cx, loc.wrapping_sub(1usize)))	a	guard: if loc != 0usize {
+selfhost/types/src/types/infer.ksnl	172	expect = params.len().wrapping_sub(skip)	a	guard: if params.len() >= skip {
+selfhost/types/src/types/infer.ksnl	179	let want = match params.as_slice().get(j.wrapping_add(skip)) {	c	unguarded addition; overflow wraps to small value
+selfhost/types/src/types/infer.ksnl	590	let fk = types.infer.item_kind(env, fi.wrapping_sub(1usize))	c	unguarded subtraction; underflow gives huge value
+selfhost/types/src/types/infer.ksnl	594	let (params, ret) = types.infer.sig_of(env, ar, cx, fi.wrapping_sub(1usize))?	c	unguarded subtraction; underflow gives huge value
+selfhost/types/src/types/infer.ksnl	803	fk = types.infer.item_kind(env, it.wrapping_sub(1usize))	a	guard: if it != 0usize {
+selfhost/types/src/types/infer.ksnl	813	let (params, ret) = types.infer.sig_of(env, ar, cx, it.wrapping_sub(1usize))?	a	guard: if it != 0usize {
+selfhost/types/src/types/infer.ksnl	901	let vitem = it.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+selfhost/types/src/types/infer.ksnl	902	let enum_item = types.infer.item_owner(env, vitem).wrapping_sub(1usize)	c	handle stored +1 (0=none); sub(1) on 0 -> usize::MAX
+selfhost/types/src/types/infer.ksnl	933	fty = types.infer.field_ty(env, ar, cx, it.wrapping_sub(1usize), &args, fname)?	a	guard: if it != 0usize {
+selfhost/types/src/types/infer.ksnl	973	let t = types.chk.ty_at(cx, loc.wrapping_sub(1usize))	a	guard: if loc != 0usize {
+selfhost/types/src/types/infer.ksnl	983	let item = it.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+selfhost/types/src/types/infer.ksnl	991	let enum_item = types.infer.item_owner(env, item).wrapping_sub(1usize)	c	handle stored +1 (0=none); sub(1) on 0 -> usize::MAX
+selfhost/types/src/types/infer.ksnl	1060	k = k.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/types/src/types/infer.ksnl	1115	let ik = types.infer.item_kind(env, it.wrapping_sub(1usize))	c	unguarded subtraction; underflow gives huge value
+selfhost/types/src/types/infer.ksnl	1124	let item = it.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+selfhost/types/src/types/infer.ksnl	1179	cx.unknown = cx.unknown.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/types/src/types/lower.ksnl	69	return Ok(types.chk.ty_at(cx, g.wrapping_sub(1usize)))	a	guard: if g != 0usize {
+selfhost/types/src/types/lower.ksnl	75	let item = it.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+selfhost/types/src/types/rec.ksnl	52	total = total.wrapping_add(p.ast.nodes.len())	c	unguarded addition; overflow wraps to small value
+selfhost/types/src/types/rec.ksnl	97	let k = b.wrapping_add(node)	c	unguarded addition; overflow wraps to small value
+selfhost/types/src/types/ty.ksnl	65	match ar.lst.as_slice().get(start.wrapping_add(k)) {	c	unguarded addition; overflow wraps to small value
+selfhost/types/src/types/ty.ksnl	131	steps = steps.wrapping_add(1usize)	d	counter loop; bounded by loop cond: loop {
+selfhost/types/src/types/ty.ksnl	159	if types.ty.has_free(ar, types.ty.arg(ar, n.b, k), depth.wrapping_add(1usize)) {	d	enclosing for/range bound
+selfhost/types/src/types/ty.ksnl	166	return types.ty.has_free(ar, n.a, depth.wrapping_add(1usize))	d	enclosing for/range bound
+selfhost/types/src/types/ty.ksnl	177	return base.wrapping_add(k)	c	unguarded addition; overflow wraps to small value
+selfhost/types/src/types/ty.ksnl	179	k = k.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/types/src/types/ty.ksnl	191	i = i.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/types/src/types/ty.ksnl	254	steps = steps.wrapping_add(1usize)	d	counter loop; bounded by loop cond: loop {
+selfhost/effects/src/effects.ksnl	24	i = i.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/effects/src/effects.ksnl	43	i = i.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/effects/src/effects/drop.ksnl	41	i = i.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/effects/src/effects/tyinfo.ksnl	8	match tout.env.tab.items.as_slice().get(it.wrapping_sub(1usize)) {	a	guard: if it != 0usize {
+selfhost/effects/src/effects/tyinfo.ksnl	11	v = ix.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/effects/src/effects/walk.ksnl	71	*x = v.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/effects/src/effects/walk.ksnl	88	return effects.walk.callee(fs, cx, acc, line, tix.wrapping_sub(1usize), name)	a	guard: if tix != 0usize {
+selfhost/effects/src/effects/walk.ksnl	226	effects.walk.callee(fs, cx, acc, line, tix.wrapping_sub(1usize), mname)?	a	guard: if tix != 0usize {
+selfhost/effects/src/effects/walk.ksnl	405	match st.fulls.as_slice().get(imp.wrapping_sub(1usize)) {	a	guard: if imp > 0usize {
+selfhost/effects/src/effects/walk.ksnl	471	let to = match edges.as_slice().get(k.wrapping_add(1usize)) {	a	guard: while k < edges.len() {
+selfhost/effects/src/effects/walk.ksnl	484	k = k.wrapping_add(2usize)	c	unguarded addition; overflow wraps to small value
+selfhost/effects/src/effects/walk.ksnl	514	acc.fnu = acc.fnu.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/fmt/src/fmt.ksnl	25	let mut s = d.line.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+selfhost/fmt/src/fmt.ksnl	28	let prev = match ls.get(s.wrapping_sub(1usize)) {	a	guard: while s > 0usize {
+selfhost/fmt/src/fmt.ksnl	42	s = s.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+selfhost/fmt/src/fmt.ksnl	65	if k.wrapping_add(1usize) < e {	a	guard: while k < e {
+selfhost/fmt/src/fmt.ksnl	68	k = k.wrapping_add(1usize)	a	guard: while k < e {
+selfhost/fmt/src/fmt.ksnl	172	if ki.wrapping_add(1usize) < g0len {	d	enclosing for/range bound
+selfhost/fmt/src/fmt.ksnl	367	while i.wrapping_add(7usize) <= hb.len() {	c	unguarded addition; overflow wraps to small value
+selfhost/fmt/src/fmt.ksnl	372	let c1 = match hb.get(i.wrapping_add(1usize)) {	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+selfhost/fmt/src/fmt.ksnl	376	let c2 = match hb.get(i.wrapping_add(2usize)) {	c	unguarded addition; overflow wraps to small value
+selfhost/fmt/src/fmt.ksnl	380	let c3 = match hb.get(i.wrapping_add(3usize)) {	c	unguarded addition; overflow wraps to small value
+selfhost/fmt/src/fmt.ksnl	384	let c4 = match hb.get(i.wrapping_add(4usize)) {	c	unguarded addition; overflow wraps to small value
+selfhost/fmt/src/fmt.ksnl	388	let c5 = match hb.get(i.wrapping_add(5usize)) {	c	unguarded addition; overflow wraps to small value
+selfhost/fmt/src/fmt.ksnl	392	let c6 = match hb.get(i.wrapping_add(6usize)) {	c	unguarded addition; overflow wraps to small value
+selfhost/fmt/src/fmt.ksnl	399	i = i.wrapping_add(1usize)	d	counter loop; bounded by loop cond: while i.wrapping_add(7usize) <= hb.len() {
+selfhost/fmt/src/fmt.ksnl	436	let c = match lb.get(end_pos.wrapping_sub(1usize)) {	a	guard: while end_pos > 4usize {
+selfhost/fmt/src/fmt.ksnl	441	end_pos = end_pos.wrapping_sub(1usize)	a	guard: while end_pos > 4usize {
+selfhost/fmt/src/fmt.ksnl	446	if end_pos.wrapping_sub(4usize) != nameb.len() {	a	guard: while end_pos > 4usize {
+selfhost/fmt/src/fmt.ksnl	451	let lc = match lb.get(4usize.wrapping_add(k)) {	c	unguarded addition; overflow wraps to small value
+selfhost/fmt/src/fmt.ksnl	462	k = k.wrapping_add(1usize)	a	guard: while k < nameb.len() {
+selfhost/fmt/src/fmt.ksnl	491	k = k.wrapping_add(1usize)	a	guard: while k < kl && same {
+selfhost/fmt/src/fmt.ksnl	552	trimmed_len = trimmed_len.wrapping_sub(1usize)	a	guard: while trimmed_len > 0usize {
+selfhost/fmt/src/fmt.ksnl	560	trimmed_len = trimmed_len.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/fmt/src/fmt.ksnl	570	tabs = tabs.wrapping_add(1usize)	a	guard: while tabs < trimmed_len {
+selfhost/fmt/src/fmt.ksnl	577	while t2 < tabs.wrapping_mul(4usize) {	b	hash/PRNG/bit op: fmt.mechanical
+selfhost/fmt/src/fmt.ksnl	579	t2 = t2.wrapping_add(1usize)	a	guard: while t2 < tabs.wrapping_mul(4usize) {
+selfhost/fmt/src/fmt.ksnl	606	match os.get(len.wrapping_sub(1usize)) {	c	unguarded subtraction; underflow gives huge value
+selfhost/fmt/src/fmt.ksnl	612	out.truncate(len.wrapping_sub(1usize))	c	unguarded subtraction; underflow gives huge value
+selfhost/fmt/src/fmt.ksnl	638	k = k.wrapping_add(1usize)	a	guard: while k < kl && same {
+selfhost/fmt/src/fmt.ksnl	648	start = start.wrapping_add(1usize)	a	guard: while start < lb.len() {
+selfhost/fmt/src/fmt.ksnl	669	end_pos = end_pos.wrapping_add(1usize)	a	guard: while end_pos < lb.len() {
+selfhost/fmt/src/fmt.ksnl	731	i = i.wrapping_add(1usize)	a	guard: while i < n {
+selfhost/fmt/src/fmt.ksnl	734	let ln = i.wrapping_add(1usize)	a	guard: while i < n {
+selfhost/fmt/src/fmt.ksnl	738	for j in core.iter.range(i.wrapping_add(1usize), n) {	d	enclosing for/range bound
+selfhost/fmt/src/fmt.ksnl	747	end_line = j.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/fmt/src/fmt.ksnl	781	let left = match idxs.get(j.wrapping_sub(1usize)) {	a	guard: while j > 0usize {
+selfhost/fmt/src/fmt.ksnl	798	let a = j.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+selfhost/fmt/src/fmt.ksnl	811	j = j.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+selfhost/resolve/src/resolve.ksnl	35	i = i.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/resolve/src/resolve.ksnl	50	i = i.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/resolve/src/resolve/ast.ksnl	13	match p.ast.links.as_slice().get(n.a.wrapping_add(k)) {	c	unguarded addition; overflow wraps to small value
+selfhost/resolve/src/resolve/report.ksnl	46	rep.errors = rep.errors.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/resolve/src/resolve/report.ksnl	93	last = k.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/resolve/src/resolve/report.ksnl	135	rep.errors = rep.errors.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/resolve/src/resolve/scope.ksnl	51	return j.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/resolve/src/resolve/scope.ksnl	99	match st.fulls.as_slice().get(imp.wrapping_sub(1usize)) {	a	guard: if imp > 0usize {
+selfhost/resolve/src/resolve/walk.ksnl	279	rep.refs = rep.refs.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/emit/src/emit.ksnl	117	let b = match starts.get(k.wrapping_add(1usize)) {	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit.ksnl	118	Some(x) => x.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+selfhost/emit/src/emit.ksnl	124	match r.split_at(b.wrapping_sub(a)) {	c	unguarded subtraction; underflow gives huge value
+selfhost/emit/src/emit.ksnl	147	emit.util.vec_push(&mut starts, k.wrapping_add(1usize))	a	guard: while k < b.len() {
+selfhost/emit/src/emit.ksnl	149	k = k.wrapping_add(1usize)	a	guard: while k < b.len() {
+selfhost/emit/src/emit.ksnl	188	i = i.wrapping_add(1usize)	a	guard: while i < n {
+selfhost/emit/src/emit.ksnl	198	let mut j = i.wrapping_add(1usize)	a	guard: while i < n {
+selfhost/emit/src/emit.ksnl	200	j = j.wrapping_add(1usize)	a	guard: while j < n && !emit.line_at(text, &starts, j).starts_with("end ") {
+selfhost/emit/src/emit.ksnl	209	let hd = emit.line_at(text, &starts, i.wrapping_add(1usize))	a	guard: while i < n {
+selfhost/emit/src/emit.ksnl	211	entry_params = emit.util.piece_count(hd, "%").wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+selfhost/emit/src/emit.ksnl	215	i = j.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit.ksnl	217	i = i.wrapping_add(1usize)	d	counter loop; bounded by loop cond: while j < n && !emit.line_at(text, &starts, j).starts_with("end ") {
+selfhost/emit/src/emit.ksnl	311	g.misc.n = g.misc.n.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit.ksnl	342	g.misc.n = g.misc.n.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit.ksnl	343	1_000_000usize.wrapping_add(g.misc.n)	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/agg.ksnl	24	vcount = vcount.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/emit/src/emit/agg.ksnl	37	let k = v.start.wrapping_add(j)	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/agg.ksnl	43	let k = a.fstart.wrapping_add(j)	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/agg.ksnl	52	emit.agg.size_of(g, t).wrapping_mul(8usize)	b	hash/PRNG/bit op: emit.agg.field_w
+selfhost/emit/src/emit/agg.ksnl	94	k = k.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/emit/src/emit/agg.ksnl	102	fcount = fcount.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/emit/src/emit/agg.ksnl	162	s.wrapping_mul(8usize)	b	hash/PRNG/bit op: emit.agg.size_bits
+selfhost/emit/src/emit/agg.ksnl	178	let bits = 1usize.wrapping_add(emit.ty.slot(g, t))	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/agg.ksnl	179	let bytes = bits.wrapping_add(7usize) / 8usize	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/agg.ksnl	180	bytes.wrapping_add(7usize) / 8usize.wrapping_mul(8usize)	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/agg.ksnl	180	bytes.wrapping_add(7usize) / 8usize.wrapping_mul(8usize)	b	hash/PRNG/bit op: emit.agg.size_of
+selfhost/emit/src/emit/agg.ksnl	194	i = i.wrapping_add(1usize)	a	guard: while i < g.tab.vars.len() {
+selfhost/emit/src/emit/func.ksnl	46	let mut k = i.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/func.ksnl	51	k = k.wrapping_add(1usize)	a	guard: while k < j {
+selfhost/emit/src/emit/func.ksnl	102	g.misc.fidx = g.misc.fidx.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/func.ksnl	140	let j = q.wrapping_sub(q0)	c	unguarded subtraction; underflow gives huge value
+selfhost/emit/src/emit/func.ksnl	169	e = e.wrapping_add(1usize)	a	guard: while e < g.flow.edges.len() {
+selfhost/emit/src/emit/func.ksnl	176	let q1 = *g.lay.bpst.get(k.wrapping_add(1usize)).unwrap_or(&0usize)	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/func.ksnl	201	let to = *g.flow.succ.get(e.wrapping_add(1usize)).unwrap_or(&0usize)	a	guard: while e < g.flow.succ.len() {
+selfhost/emit/src/emit/func.ksnl	205	e = e.wrapping_add(2usize)	a	guard: while e < g.flow.succ.len() {
+selfhost/emit/src/emit/func.ksnl	252	let mut k = i.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/func.ksnl	257	k = k.wrapping_add(1usize)	a	guard: while k < j {
+selfhost/emit/src/emit/func.ksnl	260	g.misc.nblk = g.lay.bpst.len().wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+selfhost/emit/src/emit/func.ksnl	302	let r = emit.util.after(l, emit.util.open_pos(l).wrapping_add(1usize))	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/func.ksnl	339	emit.wn(g, p.wrapping_sub(p0))	a	guard: if p > p0 {
+selfhost/emit/src/emit/inst.ksnl	133	let mv = 0i128.wrapping_sub(emit.inst.pow2(w.wrapping_sub(1usize)))	c	unguarded subtraction; underflow gives huge value
+selfhost/emit/src/emit/inst.ksnl	133	let mv = 0i128.wrapping_sub(emit.inst.pow2(w.wrapping_sub(1usize)))	c	unguarded subtraction; underflow gives huge value
+selfhost/emit/src/emit/inst.ksnl	246	j = j.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/emit/src/emit/inst.ksnl	375	j = j.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/emit/src/emit/inst.ksnl	481	emit.wn(g, off.wrapping_mul(8usize))	b	hash/PRNG/bit op: emit.inst.extract
+selfhost/emit/src/emit/inst.ksnl	871	r = r.wrapping_add(m)	a	guard: if r < 0i128 {
+selfhost/emit/src/emit/inst.ksnl	873	if r >= emit.inst.pow2(w.wrapping_sub(1usize)) {	c	unguarded subtraction; underflow gives huge value
+selfhost/emit/src/emit/inst.ksnl	874	r = r.wrapping_sub(m)	a	guard: if r >= emit.inst.pow2(w.wrapping_sub(1usize)) {
+selfhost/emit/src/emit/inst.ksnl	979	j = j.wrapping_add(1usize)	c	counter +1, not guarded; overflow only after 2^N iterations (low risk)
+selfhost/emit/src/emit/inst.ksnl	1097	let mv = 0i128.wrapping_sub(emit.inst.pow2(w.wrapping_sub(1usize)))	c	unguarded subtraction; underflow gives huge value
+selfhost/emit/src/emit/inst.ksnl	1097	let mv = 0i128.wrapping_sub(emit.inst.pow2(w.wrapping_sub(1usize)))	c	unguarded subtraction; underflow gives huge value
+selfhost/emit/src/emit/inst.ksnl	1112	let n = s.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/inst.ksnl	1155	let n = s.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/inst.ksnl	1195	let tail = emit.util.after(q, stop.wrapping_add(1usize)).trim()	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/inst.ksnl	1205	kk_b_anp = kk_b_anp.wrapping_add(1usize)	a	guard: while kk_b_anp < bb_b_anp.len() {
+selfhost/emit/src/emit/inst.ksnl	1218	kk_b_ans = kk_b_ans.wrapping_add(1usize)	a	guard: while kk_b_ans < bb_b_ans.len() {
+selfhost/emit/src/emit/inst.ksnl	1255	kk_b_aoz = kk_b_aoz.wrapping_add(1usize)	a	guard: while kk_b_aoz < bb_b_aoz.len() {
+selfhost/emit/src/emit/inst.ksnl	1294	emit.wn(g, s.wrapping_add(1usize))	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/inst.ksnl	1347	emit.wn(g, off.wrapping_mul(8usize))	b	hash/PRNG/bit op: emit.inst.place
+selfhost/emit/src/emit/inst.ksnl	1357	m = m.wrapping_mul(2i128)	b	hash/PRNG/bit op: emit.inst.pow2
+selfhost/emit/src/emit/inst.ksnl	1401	emit.wn(g, off.wrapping_mul(8usize))	b	hash/PRNG/bit op: emit.inst.setfield
+selfhost/emit/src/emit/inst.ksnl	1484	while i.wrapping_add(1usize) < hb.len() {	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+selfhost/emit/src/emit/inst.ksnl	1486	let lo = emit.util.hex_at(hb, i.wrapping_add(1usize))	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+selfhost/emit/src/emit/inst.ksnl	1487	emit.util.push_byte(&mut bytes, hi.wrapping_mul(16u8).wrapping_add(lo))	b	hash/PRNG/bit op: emit.inst.static_bytes
+selfhost/emit/src/emit/inst.ksnl	1487	emit.util.push_byte(&mut bytes, hi.wrapping_mul(16u8).wrapping_add(lo))	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/inst.ksnl	1488	i = i.wrapping_add(2usize)	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/inst.ksnl	1544	emit.wn(g, s.wrapping_add(1usize))	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/inst.ksnl	1552	emit.wn(g, s.wrapping_add(1usize))	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/rt.ksnl	82	kk_b_ak = kk_b_ak.wrapping_add(1usize)	a	guard: while kk_b_ak < bb_b_ak.len() {
+selfhost/emit/src/emit/ty.ksnl	204	depth = depth.wrapping_add(1u32)	d	counter loop; bounded by loop cond: while i < b.len() {
+selfhost/emit/src/emit/ty.ksnl	207	depth = depth.wrapping_sub(1u32)	c	unguarded subtraction; underflow gives huge value
+selfhost/emit/src/emit/ty.ksnl	224	i = i.wrapping_add(1usize)	d	counter loop; bounded by loop cond: while i < b.len() {
+selfhost/emit/src/emit/ty.ksnl	252	1usize.wrapping_add(emit.ty.slot(g, id))	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/util.ksnl	13	Some(p) => emit.util.after(s, p.wrapping_add(sep.len()))	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/util.ksnl	28	match tbl.split_at(usize.from_u8(c).wrapping_sub(32usize)) {	c	unguarded subtraction; underflow gives huge value
+selfhost/emit/src/emit/util.ksnl	55	i = i.wrapping_add(1usize)	a	guard: while i < bytes.len() {
+selfhost/emit/src/emit/util.ksnl	70	v = v.wrapping_mul(10usize).wrapping_add(usize.from_u8(c).wrapping_sub(48usize))	b	hash/PRNG/bit op: emit.util.dec
+selfhost/emit/src/emit/util.ksnl	70	v = v.wrapping_mul(10usize).wrapping_add(usize.from_u8(c).wrapping_sub(48usize))	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/util.ksnl	70	v = v.wrapping_mul(10usize).wrapping_add(usize.from_u8(c).wrapping_sub(48usize))	c	unguarded subtraction; underflow gives huge value
+selfhost/emit/src/emit/util.ksnl	71	i = i.wrapping_add(1usize)	a	guard: while going && i < b.len() {
+selfhost/emit/src/emit/util.ksnl	99	k = k.wrapping_add(1usize)	a	guard: while k < 9usize && r != i128.from_usize(k) {
+selfhost/emit/src/emit/util.ksnl	133	c.wrapping_sub(48u8)	a	guard: if c >= 48u8 && c <= 57u8 {
+selfhost/emit/src/emit/util.ksnl	135	c.wrapping_sub(87u8)	a	guard: } else if c >= 97u8 && c <= 102u8 {
+selfhost/emit/src/emit/util.ksnl	137	c.wrapping_sub(55u8)	a	guard: } else if c >= 65u8 && c <= 70u8 {
+selfhost/emit/src/emit/util.ksnl	186	v = v.wrapping_mul(10i128).wrapping_add(i128.from_u8(c.wrapping_sub(48u8)))	b	hash/PRNG/bit op: emit.util.lit_i128
+selfhost/emit/src/emit/util.ksnl	186	v = v.wrapping_mul(10i128).wrapping_add(i128.from_u8(c.wrapping_sub(48u8)))	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/util.ksnl	186	v = v.wrapping_mul(10i128).wrapping_add(i128.from_u8(c.wrapping_sub(48u8)))	a	guard: if c >= 48u8 && c <= 57u8 {
+selfhost/emit/src/emit/util.ksnl	188	i = i.wrapping_add(1usize)	a	guard: while i < b.len() {
+selfhost/emit/src/emit/util.ksnl	191	0i128.wrapping_sub(v)	c	unguarded subtraction; underflow gives huge value
+selfhost/emit/src/emit/util.ksnl	227	i = i.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/emit/src/emit/util.ksnl	237	r = emit.util.after(r, p.wrapping_add(sep.len()))	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/util.ksnl	261	r = emit.util.after(r, p.wrapping_add(sep.len()))	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/util.ksnl	262	n = n.wrapping_add(1usize)	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+selfhost/emit/src/emit/util.ksnl	289	x = 0i128.wrapping_sub(x)	c	unguarded subtraction; underflow gives huge value
+selfhost/emit/src/emit/util.ksnl	302	i = i.wrapping_sub(1usize)	a	guard: while i > 0usize {
+selfhost/emit/src/emit/util.ksnl	353	let d = match b.get(i.wrapping_add(1usize)) {	a	guard: while !done && i < b.len() {
+selfhost/emit/src/emit/util.ksnl	359	i = i.wrapping_add(2usize)	a	guard: while !done && i < b.len() {
+selfhost/emit/src/emit/util.ksnl	361	let h1 = emit.util.hex_at(b, i.wrapping_add(2usize))	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/util.ksnl	362	let h2 = emit.util.hex_at(b, i.wrapping_add(3usize))	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/util.ksnl	363	emit.util.push_byte(out, h1.wrapping_mul(16u8).wrapping_add(h2))	b	hash/PRNG/bit op: emit.util.unquote
+selfhost/emit/src/emit/util.ksnl	363	emit.util.push_byte(out, h1.wrapping_mul(16u8).wrapping_add(h2))	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/util.ksnl	364	i = i.wrapping_add(4usize)	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/util.ksnl	367	i = i.wrapping_add(2usize)	c	unguarded addition; overflow wraps to small value
+selfhost/emit/src/emit/util.ksnl	371	i = i.wrapping_add(1usize)	d	counter loop; bounded by loop cond: while !done && i < b.len() {
+selfhost/borrow/src/borrow.ksnl	21	k = k.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/borrow/src/borrow.ksnl	31	k = k.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/borrow/src/borrow.ksnl	50	errors = errors.wrapping_add(cx.rep.errors)	c	unguarded addition; overflow wraps to small value
+selfhost/borrow/src/borrow.ksnl	51	undec = undec.wrapping_add(cx.rep.undec)	c	unguarded addition; overflow wraps to small value
+selfhost/borrow/src/borrow.ksnl	52	files = files.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/borrow/src/borrow.ksnl	57	k = k.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/borrow/src/borrow/base.ksnl	27	depth = depth.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/borrow/src/borrow/base.ksnl	30	depth = depth.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+selfhost/borrow/src/borrow/cx.ksnl	124	l.rf = target.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/borrow/src/borrow/cx.ksnl	156	let j = if borrow.base.is_kw_tok(&cx.p, k.wrapping_add(1usize), parse.tok.KW_MUT) {	a	guard: while k < l.fi {
+selfhost/borrow/src/borrow/cx.ksnl	157	k.wrapping_add(2usize)	a	guard: while k < l.fi {
+selfhost/borrow/src/borrow/cx.ksnl	159	k.wrapping_add(1usize)	a	guard: while k < l.fi {
+selfhost/borrow/src/borrow/cx.ksnl	165	k = k.wrapping_add(1usize)	d	counter loop; bounded by loop cond: while k < l.fi {
+selfhost/borrow/src/borrow/cx.ksnl	199	cx.rep.errors = cx.rep.errors.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/borrow/src/borrow/cx.ksnl	233	k = k.wrapping_sub(1usize)	a	guard: while k > 0usize {
+selfhost/borrow/src/borrow/cx.ksnl	236	return k.wrapping_add(1usize)	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+selfhost/borrow/src/borrow/cx.ksnl	365	let lp = pe.wrapping_sub(ps)	c	unguarded subtraction; underflow gives huge value
+selfhost/borrow/src/borrow/cx.ksnl	366	let lq = qe.wrapping_sub(qs)	c	unguarded subtraction; underflow gives huge value
+selfhost/borrow/src/borrow/cx.ksnl	369	let x = borrow.walk.byte_at(src, ps.wrapping_add(k))	c	unguarded addition; overflow wraps to small value
+selfhost/borrow/src/borrow/cx.ksnl	370	let y = borrow.walk.byte_at(src, qs.wrapping_add(k))	c	unguarded addition; overflow wraps to small value
+selfhost/borrow/src/borrow/cx.ksnl	378	let at = borrow.base.pick(lp < lq, qs.wrapping_add(n), ps.wrapping_add(n))	c	unguarded addition; overflow wraps to small value
+selfhost/borrow/src/borrow/cx.ksnl	378	let at = borrow.base.pick(lp < lq, qs.wrapping_add(n), ps.wrapping_add(n))	c	unguarded addition; overflow wraps to small value
+selfhost/borrow/src/borrow/cx.ksnl	419	k = k.wrapping_sub(1usize)	a	guard: while k > ps {
+selfhost/borrow/src/borrow/cx.ksnl	488	return (e1.wrapping_add(1usize), b)	a	guard: if e1 < b && borrow.walk.is_dot_at(src, e1) {
+selfhost/borrow/src/borrow/cx.ksnl	498	cx.rep.undec = cx.rep.undec.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/borrow/src/borrow/esc.ksnl	38	borrow.esc.check_root(cx, root.wrapping_sub(1usize), n.tok)?	a	guard: if root != 0usize {
+selfhost/borrow/src/borrow/esc.ksnl	52	let k = idx.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+selfhost/borrow/src/borrow/esc.ksnl	55	borrow.esc.check_root(cx, l.rf.wrapping_sub(1usize), n.tok)?	a	guard: if l.rf != 0usize {
+selfhost/borrow/src/borrow/esc.ksnl	76	resolve.ast.tok_text(&cx.p, cx.src.as_slice(), tk.wrapping_sub(1usize)) == want	c	unguarded subtraction; underflow gives huge value
+selfhost/borrow/src/borrow/esc.ksnl	94	if cx.fnr.elide == k.wrapping_add(1usize) {	c	unguarded addition; overflow wraps to small value
+selfhost/borrow/src/borrow/esc.ksnl	105	let a = resolve.ast.tok_text(&cx.p, cx.src.as_slice(), pl.wrapping_sub(1usize))	c	unguarded subtraction; underflow gives huge value
+selfhost/borrow/src/borrow/esc.ksnl	106	let b = resolve.ast.tok_text(&cx.p, cx.src.as_slice(), cx.fnr.ret_life.wrapping_sub(1usize))	c	unguarded subtraction; underflow gives huge value
+selfhost/borrow/src/borrow/fns.ksnl	55	refs = refs.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/borrow/src/borrow/fns.ksnl	56	sole = idx.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/borrow/src/borrow/fns.ksnl	58	self_k = idx.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/borrow/src/borrow/walk.ksnl	19	borrow.cx.access_at(cx, idx.wrapping_sub(1usize), kind, ln.tok, ps, pe)?	a	guard: if idx != 0usize {
+selfhost/borrow/src/borrow/walk.ksnl	27	borrow.cx.access_at(cx, root.wrapping_sub(1usize), borrow.cx.K_PART, ln.tok, ps, pe)?	a	guard: if root != 0usize {
+selfhost/borrow/src/borrow/walk.ksnl	45	cx.dat.depth = cx.dat.depth.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/borrow/src/borrow/walk.ksnl	54	let next = if k.wrapping_add(1usize) < cnt {	d	enclosing for/range bound
+selfhost/borrow/src/borrow/walk.ksnl	55	parse.ast.get(&cx.p.ast, resolve.ast.item(&cx.p, bn.a, k.wrapping_add(1usize))).tok	d	enclosing for/range bound
+selfhost/borrow/src/borrow/walk.ksnl	61	let tail = is_fn == 1usize && k.wrapping_add(1usize) == cnt	d	enclosing for/range bound
+selfhost/borrow/src/borrow/walk.ksnl	69	cx.dat.depth = cx.dat.depth.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+selfhost/borrow/src/borrow/walk.ksnl	80	borrow.cx.access_at(cx, root.wrapping_sub(1usize), k, tok, ps, pe)?	c	unguarded subtraction; underflow gives huge value
+selfhost/borrow/src/borrow/walk.ksnl	111	let kk = idx.wrapping_sub(1usize)	a	guard: if idx != 0usize {
+selfhost/borrow/src/borrow/walk.ksnl	132	for j in core.iter.range(i.wrapping_add(1usize), n) {	d	enclosing for/range bound
+selfhost/borrow/src/borrow/walk.ksnl	179	borrow.cx.mark_undec(cx, idx.wrapping_sub(1usize))	a	guard: if idx != 0usize {
+selfhost/borrow/src/borrow/walk.ksnl	347	return borrow.cx.loc(cx, idx.wrapping_sub(1usize)).cl	c	unguarded subtraction; underflow gives huge value
+selfhost/borrow/src/borrow/walk.ksnl	388	k = k.wrapping_add(1usize)	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+selfhost/borrow/src/borrow/walk.ksnl	489	if idx != 0usize && borrow.cx.loc(cx, idx.wrapping_sub(1usize)).cl == borrow.base.LIN {	a	guard: if idx != 0usize && borrow.cx.loc(cx, idx.wrapping_sub(1usize)).cl == borrow.base.LIN {
+selfhost/borrow/src/borrow/walk.ksnl	501	borrow.cx.add_borrow(cx, at, root.wrapping_sub(1usize), bmut, rps, rpe)?	a	guard: if root != 0usize {
+selfhost/borrow/src/borrow/walk.ksnl	590	let l = borrow.cx.loc(cx, idx.wrapping_sub(1usize))	a	guard: if idx != 0usize {
+selfhost/borrow/src/borrow/walk.ksnl	592	borrow.cx.mark_undec(cx, idx.wrapping_sub(1usize))	a	guard: if idx != 0usize {
+selfhost/borrow/src/borrow/walk.ksnl	640	if borrow.cx.loc(cx, root.wrapping_sub(1usize)).cl != borrow.base.MOVE {	c	unguarded subtraction; underflow gives huge value
+selfhost/borrow/src/borrow/walk.ksnl	655	roots.push(root.wrapping_sub(1usize))?	b	hash/PRNG/bit op: borrow.walk.operand_borrows
+selfhost/borrow/src/borrow/walk.ksnl	731	let k = idx.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+selfhost/parse/src/parse.ksnl	34	while ls > 0usize && parse.lex.at(src, ls.wrapping_sub(1usize)) != b'\n' {	a	guard: while ls > 0usize && parse.lex.at(src, ls.wrapping_sub(1usize)) != b'\n' {
+selfhost/parse/src/parse.ksnl	35	ls = ls.wrapping_sub(1usize)	a	guard: while ls > 0usize && parse.lex.at(src, ls.wrapping_sub(1usize)) != b'\n' {
+selfhost/parse/src/parse.ksnl	40	col = col.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/parse/src/parse.ksnl	136	for at in core.iter.range(first, d.wrapping_add(1usize)) {	d	enclosing for/range bound
+selfhost/parse/src/parse.ksnl	140	*c = c.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/parse/src/parse.ksnl	146	first = d.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/parse/src/parse.ksnl	160	k = k.wrapping_add(1usize)	d	enclosing for/range bound
+selfhost/parse/src/parse/cur.ksnl	31	p.pos = p.pos.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/cur.ksnl	47	p.depth = p.depth.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/cur.ksnl	60	return Err(parse.cur.fail(p, parse.err.E_EXPECT, code.wrapping_add(1000u32)))	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/cur.ksnl	123	p.depth = p.depth.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+selfhost/parse/src/parse/cur.ksnl	147	let i = p.pos.wrapping_add(k)	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/cur.ksnl	165	match p.toks.as_slice().get(p.pos.wrapping_sub(1usize)) {	c	unguarded subtraction; underflow gives huge value
+selfhost/parse/src/parse/def.ksnl	76	link = p.pos.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/def.ksnl	286	flags = flags.wrapping_add(2usize)	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/def.ksnl	288	flags = flags.wrapping_add(parse.def.accept_pub(p))	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/expr.ksnl	49	let mut l = parse.expr.bin_level(p, lv.wrapping_add(1usize), ns)?	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/expr.ksnl	56	let r = parse.expr.bin_level(p, lv.wrapping_add(1usize), ns)?	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/expr.ksnl	270	k = k.wrapping_add(1usize)	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+selfhost/parse/src/parse/expr.ksnl	273	let b = parse.cur.peek(p, k.wrapping_add(1usize))	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+selfhost/parse/src/parse/lex.ksnl	9	let c = parse.lex.at(src, j.wrapping_add(1usize))	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/lex.ksnl	67	ls = le.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/lex.ksnl	68	line = line.wrapping_add(1usize)	d	counter loop; bounded by loop cond: while ls < n {
+selfhost/parse/src/parse/lex.ksnl	76	i = i.wrapping_add(1usize)	a	guard: while i < le && parse.lex.at(src, i) == b' ' {
+selfhost/parse/src/parse/lex.ksnl	81	if parse.lex.at(src, i) == b'/' && parse.lex.at(src, i.wrapping_add(1usize)) == b'/' {	a	guard: while i < le && parse.lex.at(src, i) == b' ' {
+selfhost/parse/src/parse/lex.ksnl	84	if parse.lex.at(src, i) == b'.' && parse.lex.at(src, i.wrapping_add(1usize)) != b'.' {	a	guard: while i < le && parse.lex.at(src, i) == b' ' {
+selfhost/parse/src/parse/lex.ksnl	92	i = i.wrapping_add(1usize)	a	guard: while i < le {
+selfhost/parse/src/parse/lex.ksnl	95	let nx = parse.lex.at(src, i.wrapping_add(1usize))	a	guard: while i < le {
+selfhost/parse/src/parse/lex.ksnl	99	i.wrapping_add(1usize)	a	guard: while i < le {
+selfhost/parse/src/parse/lex.ksnl	135	parse.lex.emit(toks, parse.tok.Kind.Op, two, i, i.wrapping_add(2usize), line)?	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/lex.ksnl	136	i = i.wrapping_add(2usize)	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/lex.ksnl	141	let stop = i.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/lex.ksnl	164	i = i.wrapping_add(1usize)	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+selfhost/parse/src/parse/lex.ksnl	195	j = j.wrapping_add(1usize)	c	counter +1, not guarded; overflow only after 2^N iterations (low risk)
+selfhost/parse/src/parse/lex.ksnl	198	let c1 = parse.lex.at(src, j.wrapping_add(1usize))	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/lex.ksnl	201	j = parse.lex.skip_digits(src, j.wrapping_add(2usize), le, true)	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/lex.ksnl	203	j = parse.lex.skip_digits(src, j.wrapping_add(2usize), le, false)	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/lex.ksnl	206	let j1 = j.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/lex.ksnl	212	let mut k = j.wrapping_add(1usize)	a	guard: if j < le && parse.lex.at(src, j) == b'e' {
+selfhost/parse/src/parse/lex.ksnl	215	k = k.wrapping_add(1usize)	c	counter +1, not guarded; overflow only after 2^N iterations (low risk)
+selfhost/parse/src/parse/lex.ksnl	226	let e = j.wrapping_add(sb.len())	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/lex.ksnl	270	i.wrapping_add(2usize)	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/lex.ksnl	272	i.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/lex.ksnl	279	let mut k = j.wrapping_add(parse.lex.utf8_len(c))	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/lex.ksnl	281	let e = parse.lex.at(src, j.wrapping_add(1usize))	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/lex.ksnl	283	k = j.wrapping_add(4usize)	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/lex.ksnl	292	k = m.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/lex.ksnl	295	m = m.wrapping_add(1usize)	d	counter loop; bounded by loop cond: loop {
+selfhost/parse/src/parse/lex.ksnl	298	k = j.wrapping_add(2usize)	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/lex.ksnl	303	return Ok((parse.tok.Kind.Byte, k.wrapping_add(1usize)))	a	guard: if k < le && parse.lex.at(src, k) == b'\'' && j < le {
+selfhost/parse/src/parse/lex.ksnl	305	return Ok((parse.tok.Kind.Char, k.wrapping_add(1usize)))	a	guard: if k < le && parse.lex.at(src, k) == b'\'' && j < le {
+selfhost/parse/src/parse/lex.ksnl	307	let mut m = i.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/lex.ksnl	309	m = m.wrapping_add(1usize)	a	guard: while m < le && parse.lex.is_lifetime_char(parse.lex.at(src, m)) {
+selfhost/parse/src/parse/lex.ksnl	311	if m > i.wrapping_add(1usize) && parse.lex.is_lower(parse.lex.at(src, i.wrapping_add(1usize))) {	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+selfhost/parse/src/parse/lex.ksnl	311	if m > i.wrapping_add(1usize) && parse.lex.is_lower(parse.lex.at(src, i.wrapping_add(1usize))) {	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+selfhost/parse/src/parse/lex.ksnl	325	j = j.wrapping_add(1usize)	a	guard: while j < le {
+selfhost/parse/src/parse/lex.ksnl	331	let mut j = i.wrapping_add(1usize)	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+selfhost/parse/src/parse/lex.ksnl	342	j = j.wrapping_add(2usize)	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/lex.ksnl	344	j = j.wrapping_add(1usize)	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+selfhost/parse/src/parse/lex.ksnl	347	Ok(j.wrapping_add(1usize))	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/lex.ksnl	366	j = j.wrapping_add(1usize)	a	guard: while j < le && parse.lex.is_word(parse.lex.at(src, j)) {
+selfhost/parse/src/parse/lex.ksnl	389	code = cx.wrapping_add(100u32)	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/lex.ksnl	391	if j == i.wrapping_add(1usize) && parse.lex.at(src, i) == b'_' {	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/pat.ksnl	50	segs = segs.wrapping_add(1usize)	d	counter loop; bounded by loop cond: while parse.cur.is_ch(p, b'.') && parse.tok.is_plain_name(parse.cur.peek(p, 1usize)) {
+selfhost/parse/src/parse/tok.ksnl	206	let kw = code.wrapping_sub(1000u32)	a	guard: if code >= 1000u32 {
+selfhost/parse/src/parse/tok.ksnl	208	parse.tok.push_word(out, cxs, kw.wrapping_sub(100u32))?	a	guard: if kw >= 101u32 {
+selfhost/parse/src/parse/tok.ksnl	213	parse.tok.push_word(out, ops2, code.wrapping_sub(300u32))?	a	guard: } else if code >= 301u32 {
+selfhost/parse/src/parse/tok.ksnl	226	i = i.wrapping_add(1u32)	d	enclosing for/range bound
+selfhost/parse/src/parse/tok.ksnl	237	n = n.wrapping_add(1u32)	d	enclosing for/range bound
+selfhost/parse/src/parse/ty.ksnl	21	stack = p.pos.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/ty.ksnl	148	Err(parse.cur.fail(p, parse.err.E_EXPECT, 1000u32.wrapping_add(parse.tok.KW_NEVER)))	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/ty.ksnl	172	life = p.pos.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+selfhost/parse/src/parse/ty.ksnl	301	life = p.pos.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+examples/realtime/src/realtime.ksnl	47	self.head = self.head.wrapping_add(1usize).checked_rem(self.cap).unwrap_or(0usize)	c	unguarded addition; overflow wraps to small value
+examples/realtime/src/realtime.ksnl	48	self.len = self.len.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+examples/realtime/src/realtime.ksnl	56	let slot = self.head.wrapping_add(self.len)	c	unguarded addition; overflow wraps to small value
+examples/realtime/src/realtime.ksnl	67	self.len = self.len.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+examples/realtime/src/realtime.ksnl	89	n.wrapping_add(realtime.triangle(n.wrapping_sub(1u32)))	c	unguarded addition; overflow wraps to small value
+examples/realtime/src/realtime.ksnl	89	n.wrapping_add(realtime.triangle(n.wrapping_sub(1u32)))	c	unguarded subtraction; underflow gives huge value
+examples/threads/src/threads.ksnl	26	40u32.wrapping_add(2u32)	c	unguarded addition; overflow wraps to small value
+examples/tour/src/tour.ksnl	13	self.total = self.total.wrapping_add(v)	c	unguarded addition; overflow wraps to small value
+examples/tour/src/tour.ksnl	14	self.hits = self.hits.wrapping_add(1u32)	c	unguarded addition; overflow wraps to small value
+examples/tour/src/tour.ksnl	24	total = total.wrapping_add(v)	c	unguarded addition; overflow wraps to small value
+examples/tour/src/tour.ksnl	39	let c = a.wrapping_add(10u8)	c	unguarded addition; overflow wraps to small value
+examples/tour/src/tour.ksnl	44	b.wrapping_add(c).wrapping_add(d)	c	unguarded addition; overflow wraps to small value
+examples/tour/src/tour.ksnl	44	b.wrapping_add(c).wrapping_add(d)	c	unguarded addition; overflow wraps to small value
+examples/tour/src/tour.ksnl	51	i = i.wrapping_add(1u32)	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+examples/tour/src/tour.ksnl	58	total = total.wrapping_add(i)	c	unguarded addition; overflow wraps to small value
+examples/tour/src/tour.ksnl	147	sum = sum.wrapping_add(match s {	b	hash/PRNG/bit op: tour.shapes
+examples/tour/src/tour.ksnl	148	tour.Shape.Circle(r) => r.wrapping_mul(2i32)	b	hash/PRNG/bit op: tour.shapes
+examples/tour/src/tour.ksnl	149	tour.Shape.Rect(w, h) => w.wrapping_mul(h)	b	hash/PRNG/bit op: tour.shapes
+examples/demo/src/demo.ksnl	10	self.count = self.count.wrapping_add(1u32)	c	unguarded addition; overflow wraps to small value
+examples/demo/src/demo.ksnl	17	demo.fib(n.wrapping_sub(1u32)).wrapping_add(demo.fib(n.wrapping_sub(2u32)))	c	unguarded subtraction; underflow gives huge value
+examples/demo/src/demo.ksnl	17	demo.fib(n.wrapping_sub(1u32)).wrapping_add(demo.fib(n.wrapping_sub(2u32)))	c	unguarded addition; overflow wraps to small value
+examples/demo/src/demo.ksnl	17	demo.fib(n.wrapping_sub(1u32)).wrapping_add(demo.fib(n.wrapping_sub(2u32)))	c	unguarded subtraction; underflow gives huge value
+examples/demo/src/demo.ksnl	30	acc.wrapping_add(x)	c	unguarded addition; overflow wraps to small value
+examples/demo/src/demo/shape.ksnl	9	demo.shape.Shape.Circle(r) => r.wrapping_mul(3i32)	b	hash/PRNG/bit op: demo.shape.area
+examples/demo/src/demo/shape.ksnl	10	demo.shape.Shape.Rect(w, h) => w.wrapping_mul(h)	b	hash/PRNG/bit op: demo.shape.area
+examples/native/src/native.ksnl	8	cur = cur.wrapping_mul(3u64).wrapping_add(1u64)	b	hash/PRNG/bit op: native.collatz
+examples/native/src/native.ksnl	8	cur = cur.wrapping_mul(3u64).wrapping_add(1u64)	c	unguarded addition; overflow wraps to small value
+examples/native/src/native.ksnl	10	steps = steps.wrapping_add(1u32)	d	counter loop; bounded by loop cond: while cur != 1u64 {
+examples/native/src/native.ksnl	19	k = k.wrapping_sub(2u64)	a	guard: while k > 1u64 {
+examples/native/src/native.ksnl	20	r = r.wrapping_add(1u64)	d	counter loop; bounded by loop cond: while k > 1u64 {
+examples/more_coll/src/more_coll.ksnl	10	Ok(Some(old)) => match m.insert(*c, old.wrapping_add(1u32)) {	c	unguarded addition; overflow wraps to small value
+examples/more_coll/src/more_coll.ksnl	17	i = i.wrapping_add(1usize)	a	guard: while i < bytes.len() {
+examples/more_str/src/more_str.ksnl	7	Some(a) => match bytes.get(hi.wrapping_sub(1usize)) {	c	unguarded subtraction; underflow gives huge value
+examples/more_str/src/more_str.ksnl	12	lo = lo.wrapping_add(1usize)	a	guard: while lo < hi {
+examples/more_str/src/more_str.ksnl	13	hi = hi.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+examples/more_str/src/more_str.ksnl	44	count = count.wrapping_add(1u32)	d	enclosing for/range bound
+examples/json/src/json.ksnl	26	let mut i = json.skip_ws(src, pos.wrapping_add(1usize))	c	unguarded addition; overflow wraps to small value
+examples/json/src/json.ksnl	29	return Ok((at, i.wrapping_add(1usize)))	c	unguarded addition; overflow wraps to small value
+examples/json/src/json.ksnl	38	i = json.skip_ws(src, j.wrapping_add(1usize))	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+examples/json/src/json.ksnl	52	Ok((at, close.wrapping_add(1usize)))	c	unguarded addition; overflow wraps to small value
+examples/json/src/json.ksnl	67	i = i.wrapping_add(1usize)	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+examples/json/src/json.ksnl	78	match src.get(pos.wrapping_add(1usize)) {	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+examples/json/src/json.ksnl	81	let mut k = pos.wrapping_add(2usize)	c	unguarded addition; overflow wraps to small value
+examples/json/src/json.ksnl	82	let stop = pos.wrapping_add(6usize)	c	unguarded addition; overflow wraps to small value
+examples/json/src/json.ksnl	93	k = k.wrapping_add(1usize)	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+examples/json/src/json.ksnl	98	Ok(pos.wrapping_add(2usize))	c	unguarded addition; overflow wraps to small value
+examples/json/src/json.ksnl	122	let stop = pos.wrapping_add(want.len())	c	unguarded addition; overflow wraps to small value
+examples/json/src/json.ksnl	146	i = i.wrapping_add(1usize)	c	counter +1, not guarded; overflow only after 2^N iterations (low risk)
+examples/json/src/json.ksnl	154	let frac_end = json.digits(src, i.wrapping_add(1usize))	c	unguarded addition; overflow wraps to small value
+examples/json/src/json.ksnl	155	if frac_end == i.wrapping_add(1usize) {	c	unguarded addition; overflow wraps to small value
+examples/json/src/json.ksnl	162	let mut k = i.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+examples/json/src/json.ksnl	165	k = k.wrapping_add(1usize)	c	counter +1, not guarded; overflow only after 2^N iterations (low risk)
+examples/json/src/json.ksnl	179	let mut i = json.skip_ws(src, pos.wrapping_add(1usize))	c	unguarded addition; overflow wraps to small value
+examples/json/src/json.ksnl	182	return Ok((at, i.wrapping_add(1usize)))	c	unguarded addition; overflow wraps to small value
+examples/json/src/json.ksnl	194	let (val, after_val) = json.value(doc, src, json.skip_ws(src, colon.wrapping_add(1usize)))?	c	unguarded addition; overflow wraps to small value
+examples/json/src/json.ksnl	200	i = json.skip_ws(src, j.wrapping_add(1usize))	c	unguarded addition; overflow wraps to small value
+examples/json/src/json.ksnl	211	let pairs = items.len().wrapping_shr(1u32)	b	hash/PRNG/bit op: json.object
+examples/json/src/json.ksnl	214	Ok((at, close.wrapping_add(1usize)))	c	unguarded addition; overflow wraps to small value
+examples/json/src/json.ksnl	264	i = i.wrapping_add(1usize)	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+examples/json/src/json.ksnl	275	let mut i = pos.wrapping_add(1usize)	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+examples/json/src/json.ksnl	287	i = i.wrapping_add(1usize)	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+examples/json/src/json.ksnl	291	let at = json.push_node(doc, json.Node.Str(pos.wrapping_add(1usize), i))?	c	unguarded addition; overflow wraps to small value
+examples/json/src/json.ksnl	292	Ok((at, i.wrapping_add(1usize)))	c	unguarded addition; overflow wraps to small value
+examples/json/src/json.ksnl	327	json.write_link(doc, src, first.wrapping_add(k), out)?	c	unguarded addition; overflow wraps to small value
+examples/json/src/json.ksnl	338	let at = first.wrapping_add(k.wrapping_mul(2usize))	c	unguarded addition; overflow wraps to small value
+examples/json/src/json.ksnl	338	let at = first.wrapping_add(k.wrapping_mul(2usize))	b	hash/PRNG/bit op: json.write
+examples/json/src/json.ksnl	341	json.write_link(doc, src, at.wrapping_add(1usize), out)?	d	enclosing for/range bound
+examples/shortener/src/shortener/code.ksnl	10	base = b'a'.wrapping_sub(10u8)	c	unguarded subtraction; underflow gives huge value
+examples/shortener/src/shortener/code.ksnl	12	match char.try_from_u32(u32.from_u8(base.wrapping_add(d))) {	c	unguarded addition; overflow wraps to small value
+examples/shortener/src/shortener/code.ksnl	41	let at = len.wrapping_sub(k).wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+examples/shortener/src/shortener/code.ksnl	41	let at = len.wrapping_sub(k).wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+examples/shortener/src/shortener/json.ksnl	45	let high = unit.wrapping_shr(4u32)	b	hash/PRNG/bit op: shortener.json.push_control
+examples/http/src/http.ksnl	62	http.read_body(stream, &mut data, head_end.wrapping_add(length))?	c	unguarded addition; overflow wraps to small value
+examples/http/src/http.ksnl	64	if full.len() != head_end.wrapping_add(length) {	c	unguarded addition; overflow wraps to small value
+examples/http/src/http.ksnl	83	let mut j = i.wrapping_add(key.len())	c	unguarded addition; overflow wraps to small value
+examples/http/src/http.ksnl	89	value = value * 10usize + usize.from_u8(c.wrapping_sub(b'0'))	a	guard: Some(c) => if *c >= b'0' && *c <= b'9' {
+examples/http/src/http.ksnl	91	j = j.wrapping_add(1usize)	d	enclosing for/range bound
+examples/http/src/http.ksnl	135	while i.wrapping_add(4usize) <= len {	c	unguarded addition; overflow wraps to small value
+examples/http/src/http.ksnl	137	return Some(i.wrapping_add(4usize))	c	unguarded addition; overflow wraps to small value
+examples/http/src/http.ksnl	139	i = i.wrapping_add(1usize)	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+examples/http/src/http.ksnl	147	if buf.get(at.wrapping_add(i)) != lit.get(i) {	c	unguarded addition; overflow wraps to small value
+examples/http/src/http.ksnl	150	i = i.wrapping_add(1usize)	a	guard: while i < lit.len() {
+examples/http/src/http.ksnl	193	i = i.wrapping_add(1usize)	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+examples/ui_demo/src/demo.ksnl	73	i = i.wrapping_add(1usize)	a	guard: while i < b.len() {
+examples/ui_demo/src/demo.ksnl	91	k = k.wrapping_add(1usize)	a	guard: while k < bs.len() {
+examples/ui_demo/src/demo.ksnl	108	i = i.wrapping_add(1usize)	a	guard: while i < std.env.arg_count() {
+examples/ui_demo/src/demo.ksnl	115	i = i.wrapping_add(1usize)	a	guard: while i < std.env.arg_count() {
+examples/ui_demo/src/demo.ksnl	122	i = i.wrapping_add(1usize)	d	counter loop; bounded by loop cond: while i < std.env.arg_count() {
+examples/ui_demo/src/demo.ksnl	143	f.wrapping_add(1usize)	a	guard: let limit = if f < script.len() {
+examples/ui_demo/src/demo.ksnl	154	let frame_path = if f.wrapping_add(1usize) == frames {	a	guard: let limit = if f < script.len() {
+examples/ui_demo/src/demo.ksnl	176	n = n.wrapping_mul(10usize).wrapping_add(usize.from_u8(v).wrapping_sub(48usize))	b	hash/PRNG/bit op: demo.parse_usize
+examples/ui_demo/src/demo.ksnl	176	n = n.wrapping_mul(10usize).wrapping_add(usize.from_u8(v).wrapping_sub(48usize))	c	unguarded addition; overflow wraps to small value
+examples/ui_demo/src/demo.ksnl	176	n = n.wrapping_mul(10usize).wrapping_add(usize.from_u8(v).wrapping_sub(48usize))	c	unguarded subtraction; underflow gives huge value
+examples/ui_demo/src/demo.ksnl	178	i = i.wrapping_add(1usize)	a	guard: while i < b.len() {
+examples/ui_demo/src/demo.ksnl	202	k = k.wrapping_add(1usize)	a	guard: while k < bs.len() {
+examples/ui_demo/src/demo.ksnl	246	row = row.wrapping_add(1usize)	a	guard: while row < last {
+examples/ui_demo/src/demo.ksnl	347	app.counter = app.counter.wrapping_add(1u32)	c	unguarded addition; overflow wraps to small value
+examples/ui_demo/src/demo.ksnl	402	let l0 = lf.trunc_to_usize().unwrap_or(0usize).wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+examples/features/src/features.ksnl	31	self.side.wrapping_mul(self.side)	b	hash/PRNG/bit op: features.Square.area
+examples/features/src/features.ksnl	40	self.cur = self.cur.wrapping_add(1u32)	c	unguarded addition; overflow wraps to small value
+examples/features/src/features.ksnl	46	features.Op.Add => a.wrapping_add(b)	c	unguarded addition; overflow wraps to small value
+examples/features/src/features.ksnl	47	features.Op.Sub => a.wrapping_sub(b)	c	unguarded subtraction; underflow gives huge value
+examples/features/src/features.ksnl	48	features.Op.Neg => a.wrapping_neg()	b	hash/PRNG/bit op: features.apply
+examples/features/src/features.ksnl	69	cur = cur.wrapping_shr(1u32)	b	hash/PRNG/bit op: features.collatz
+examples/features/src/features.ksnl	71	cur = cur.wrapping_mul(3u64).wrapping_add(1u64)	b	hash/PRNG/bit op: features.collatz
+examples/features/src/features.ksnl	71	cur = cur.wrapping_mul(3u64).wrapping_add(1u64)	c	unguarded addition; overflow wraps to small value
+examples/features/src/features.ksnl	73	steps = steps.wrapping_add(1u32)	d	counter loop; bounded by loop cond: while cur != 1u64 {
+examples/features/src/features.ksnl	102	acc = acc.wrapping_add(n)	c	unguarded addition; overflow wraps to small value
+examples/features/src/features.ksnl	114	x.wrapping_mul(2i32)	b	hash/PRNG/bit op: features.main
+examples/features/src/features.ksnl	119	a.wrapping_add(x)	c	unguarded addition; overflow wraps to small value
+examples/features/src/features.ksnl	139	core.check.eq(255u8.wrapping_add(1u8), 0u8)	c	unguarded addition; overflow wraps to small value
+examples/ffi/shapes/src/shapes.ksnl	86	count: acc.count.wrapping_add(1i32)	b	hash/PRNG/bit op: shapes.vertex
+examples/plugins/src/plugins.ksnl	29	total = total.wrapping_add(self.handlers[i].handler.handle(event))	c	unguarded addition; overflow wraps to small value
+examples/plugins/src/plugins.ksnl	30	i = i.wrapping_add(1usize)	a	guard: while i < self.handlers.len() {
+examples/plugins/src/plugins.ksnl	51	self.seen = self.seen.wrapping_add(1u32)	c	unguarded addition; overflow wraps to small value
+examples/plugins/src/plugins.ksnl	57	self.calls = self.calls.wrapping_add(1u32)	c	unguarded addition; overflow wraps to small value
+examples/plugins/src/plugins.ksnl	84	Ok(first.wrapping_add(second))	c	unguarded addition; overflow wraps to small value
+examples/kvlib/tests/api.ksnl	11	seen = seen.wrapping_add(1usize)	d	enclosing for/range bound
+examples/kvlib/src/kvlib/lookup.ksnl	7	n = n.wrapping_add(1usize)	d	enclosing for/range bound
+examples/tutorial_ffi/src/tutorial_ffi.ksnl	71	count: acc.count.wrapping_add(1i32)	c	unguarded addition; overflow wraps to small value
+ui/kasane/smoke/src/smoke.ksnl	201	i = i.wrapping_add(1u64)	d	counter loop; bounded by loop cond: while i < n_glyphs {
+ui/kasane/smoke/src/smoke.ksnl	260	i = i.wrapping_add(1u64)	d	counter loop; bounded by loop cond: while col < gw {
+ui/kasane/smoke/src/smoke.ksnl	283	ck = ck.wrapping_mul(31u32).wrapping_add(u32.from_u8(rgba[k]))	b	hash/PRNG/bit op: smoke.main
+ui/kasane/smoke/src/smoke.ksnl	283	ck = ck.wrapping_mul(31u32).wrapping_add(u32.from_u8(rgba[k]))	c	unguarded addition; overflow wraps to small value
+ui/kasane/focus/src/ui/focus.ksnl	76	i = i.wrapping_add(1usize)	d	enclosing for/range bound
+ui/kasane/focus/src/ui/focus.ksnl	107	match scope.nodes.get(node_idx.wrapping_sub(1usize)) {	a	guard: } else if node_idx > 0usize {
+ui/kasane/focus/src/ui/focus.ksnl	169	next = pos.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+ui/kasane/focus/src/ui/focus.ksnl	171	let np = pos.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+ui/kasane/focus/src/ui/focus.ksnl	214	match pos.wrapping_add(1usize).checked_rem(len) {	d	enclosing for/range bound
+ui/kasane/focus/src/ui/focus.ksnl	269	len.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+ui/kasane/focus/src/ui/focus.ksnl	271	pos.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+ui/kasane/focus/src/ui/focus.ksnl	274	len.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+ui/kasane/focus/src/ui/focus.ksnl	499	j = j.wrapping_add(1usize)	a	guard: while j < insert_at {
+ui/kasane/scroll/src/ui/scroll_test.ksnl	104	i = i.wrapping_add(1usize)	a	guard: while i < 200usize {
+ui/kasane/scroll/src/ui/scroll_test.ksnl	125	i = i.wrapping_add(1usize)	a	guard: while i < 200usize {
+ui/kasane/scroll/src/ui/scroll_test.ksnl	128	moved = moved.wrapping_add(1usize)	d	counter loop; bounded by loop cond: while i < 200usize {
+ui/kasane/scroll/src/ui/scroll_test.ksnl	140	core.check.eq(moved, i.wrapping_sub(1usize))	c	unguarded subtraction; underflow gives huge value
+ui/kasane/scroll/src/ui/scroll_test.ksnl	152	i = i.wrapping_add(1usize)	a	guard: while i < 20usize {
+ui/kasane/scroll/src/ui/scroll_test.ksnl	170	i = i.wrapping_add(1usize)	a	guard: while i < 200usize {
+ui/kasane/event/src/ui/event.ksnl	78	match pos.wrapping_add(1usize).checked_rem(len) {	d	enclosing for/range bound
+ui/kasane/event/src/ui/event.ksnl	100	let last = match self.tab_order.get(len.wrapping_sub(1usize)) {	c	unguarded subtraction; underflow gives huge value
+ui/kasane/event/src/ui/event.ksnl	123	len.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+ui/kasane/event/src/ui/event.ksnl	125	pos.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+ui/kasane/event/src/ui/event.ksnl	128	len.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+ui/kasane/event/src/ui/event.ksnl	192	i = i.wrapping_sub(1usize)	a	guard: while i > 0usize {
+ui/kasane/golden/src/golden.ksnl	378	i = i.wrapping_add(1u64)	d	counter loop; bounded by loop cond: while i < n_glyphs {
+ui/kasane/golden/src/golden.ksnl	437	i = i.wrapping_add(1u64)	d	counter loop; bounded by loop cond: while col < gw {
+ui/kasane/app/src/ui/app.ksnl	61	add_i = add_i.wrapping_add(1usize)	a	guard: while add_i < patch.added.len() {
+ui/kasane/app/src/ui/app.ksnl	70	ch_i = ch_i.wrapping_add(1usize)	a	guard: while ch_i < patch.changed.len() {
+ui/kasane/app/src/ui/app.ksnl	80	mv_i = mv_i.wrapping_add(1usize)	a	guard: while mv_i < patch.moved.len() {
+ui/kasane/app/src/ui/app.ksnl	89	rm_i = rm_i.wrapping_add(1usize)	a	guard: while rm_i < patch.removed.len() {
+ui/kasane/app/src/ui/app.ksnl	92	self.frame = self.frame.wrapping_add(1u64)	c	unguarded addition; overflow wraps to small value
+ui/kasane/app/src/ui/app.ksnl	115	ei = ei.wrapping_add(1usize)	a	guard: while ei < kids.len() {
+ui/kasane/app/src/ui/app.ksnl	129	ti = ti.wrapping_add(1usize)	a	guard: while ti < existing_count {
+ui/kasane/app/src/ui/app.ksnl	245	ni = ni.wrapping_add(1usize)	a	guard: while ni < new_kids.len() {
+ui/kasane/app/src/ui/app.ksnl	264	ti = ti.wrapping_add(1usize)	d	counter loop; bounded by loop cond: while ti < existing_count {
+ui/kasane/app/src/ui/app.ksnl	341	i = i.wrapping_add(1usize)	a	guard: while i <= node {
+ui/kasane/layout/src/ui/layout.ksnl	196	i = i.wrapping_add(1usize)	d	counter loop; bounded by loop cond: while i < count {
+ui/kasane/layout/src/ui/layout.ksnl	198	let gap_count = core.num.f32.from_usize_nearest(count.wrapping_sub(1usize))	c	unguarded subtraction; underflow gives huge value
+ui/kasane/layout/src/ui/layout.ksnl	240	i = i.wrapping_add(1usize)	d	counter loop; bounded by loop cond: while i < count {
+ui/kasane/layout/src/ui/layout.ksnl	250	justify_free / core.num.f32.from_usize_nearest(count.wrapping_sub(1usize))	a	guard: let b = if count > 1usize {
+ui/kasane/layout/src/ui/layout.ksnl	323	i = i.wrapping_add(1usize)	c	counter +1, not guarded; overflow only after 2^N iterations (low risk)
+ui/kasane/src/ui.platform.ksnl	133	let upto = i.wrapping_add(usize.from_u32(len))	c	unguarded addition; overflow wraps to small value
+ui/kasane/src/ui.platform.ksnl	143	i = i.wrapping_add(1usize)	a	guard: while i < upto {
+ui/kasane/src/ui.render.ksnl	188	i = i.wrapping_add(1usize)	d	counter loop; bounded by loop cond: while i < list.len() {
+ui/kasane/src/ui.render.ksnl	218	stack_len = stack_len.wrapping_add(1usize)	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+ui/kasane/src/ui.render.ksnl	221	stack_len = stack_len.wrapping_sub(1usize)	a	guard: ui.render.Item.ClipPop => if stack_len > 0usize {
+ui/kasane/src/ui.render.ksnl	230	i = i.wrapping_add(1usize)	d	counter loop; bounded by loop cond: while i < list.len() {
+ui/kasane/src/ui.render.ksnl	239	match stack.get(stack_len.wrapping_sub(1usize)) {	c	unguarded subtraction; underflow gives huge value
+ui/kasane/src/ui.render.ksnl	266	wi.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+ui/kasane/src/ui.render.ksnl	289	wi.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+ui/kasane/src/ui.render.ksnl	317	wi.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+ui/kasane/src/ui.render.ksnl	438	ck = ck.wrapping_mul(31u64).wrapping_add(u64.from_u8(rgba[i]))	b	hash/PRNG/bit op: ui.render.render_checksum
+ui/kasane/src/ui.render.ksnl	438	ck = ck.wrapping_mul(31u64).wrapping_add(u64.from_u8(rgba[i]))	b	hash/PRNG/bit op: ui.render.render_checksum
+ui/kasane/src/ui.text.ksnl	77	count = count.wrapping_add(1usize)	c	counter +1, not guarded; overflow only after 2^N iterations (low risk)
+ui/kasane/src/ui.text.ksnl	94	count.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+ui/kasane/src/ui.text.ksnl	171	if x != pad && x.wrapping_add(w).wrapping_add(pad) > atlas_w {	c	unguarded addition; overflow wraps to small value
+ui/kasane/src/ui.text.ksnl	171	if x != pad && x.wrapping_add(w).wrapping_add(pad) > atlas_w {	c	unguarded addition; overflow wraps to small value
+ui/kasane/src/ui.text.ksnl	173	y = y.wrapping_add(row_h).wrapping_add(pad)	c	unguarded addition; overflow wraps to small value
+ui/kasane/src/ui.text.ksnl	173	y = y.wrapping_add(row_h).wrapping_add(pad)	c	unguarded addition; overflow wraps to small value
+ui/kasane/src/ui.text.ksnl	176	if y.wrapping_add(h).wrapping_add(pad) > atlas_h {	c	unguarded addition; overflow wraps to small value
+ui/kasane/src/ui.text.ksnl	176	if y.wrapping_add(h).wrapping_add(pad) > atlas_h {	c	unguarded addition; overflow wraps to small value
+ui/kasane/src/ui.text.ksnl	191	i = i.wrapping_add(1usize)	a	guard: while i < n {
+ui/kasane/src/ui.text.ksnl	213	x = x.wrapping_add(w).wrapping_add(pad)	c	unguarded addition; overflow wraps to small value
+ui/kasane/src/ui.text.ksnl	213	x = x.wrapping_add(w).wrapping_add(pad)	c	unguarded addition; overflow wraps to small value
+ui/kasane/src/ui.text.ksnl	217	i = i.wrapping_add(1usize)	d	counter loop; bounded by loop cond: while i < n {
+ui/kasane/tree/src/ui/tree.ksnl	91	ei = ei.wrapping_add(1usize)	d	counter loop; bounded by loop cond: while ei < existing_count {
+ui/kasane/tree/src/ui/tree.ksnl	100	ei = ei.wrapping_add(1usize)	a	guard: while ei < existing_count {
+ui/kasane/tree/src/ui/tree.ksnl	181	ni = ni.wrapping_add(1usize)	a	guard: while ni < new_kids.len() {
+ui/kasane/tree/src/ui/tree.ksnl	197	i = i.wrapping_add(1usize)	a	guard: while i < self.nodes.len() {
+ui/kasane/tree/src/ui/tree.ksnl	233	i = i.wrapping_add(1usize)	a	guard: while i < kids.len() {
+ui/kasane/tree/src/ui/tree.ksnl	235	p = p.wrapping_add(1usize)	d	counter loop; bounded by loop cond: while i < kids.len() {
+ui/kasane/tree/src/ui/tree_test.ksnl	21	self.n = n.wrapping_add(1u32)	c	unguarded addition; overflow wraps to small value
+ui/kasane/widgets/src/ui/widgets.ksnl	139	self.rc.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+ui/kasane/widgets/src/ui/widgets.ksnl	154	self.sel = Some(s.wrapping_sub(1usize))	a	guard: Some(s) => if s > 0usize {
+ui/kasane/widgets/src/ui/widgets.ksnl	165	let n = s.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+ui/kasane/widgets/src/ui/widgets.ksnl	257	Some(v) => v.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+ui/kasane/widgets/src/ui/widgets.ksnl	274	self.caret.wrapping_add(self.comp.len())	c	unguarded addition; overflow wraps to small value
+ui/kasane/widgets/src/ui/widgets.ksnl	281	while removed < hi.wrapping_sub(lo) {	c	unguarded subtraction; underflow gives huge value
+ui/kasane/widgets/src/ui/widgets.ksnl	286	removed = removed.wrapping_add(1usize)	a	guard: while removed < hi.wrapping_sub(lo) {
+ui/kasane/widgets/src/ui/widgets.ksnl	294	let count = self.caret.wrapping_sub(prev)	a	guard: } else if self.caret > 0usize {
+ui/kasane/widgets/src/ui/widgets.ksnl	311	while removed < hi.wrapping_sub(lo) {	c	unguarded subtraction; underflow gives huge value
+ui/kasane/widgets/src/ui/widgets.ksnl	316	removed = removed.wrapping_add(1usize)	a	guard: while removed < hi.wrapping_sub(lo) {
+ui/kasane/widgets/src/ui/widgets.ksnl	326	let count = next.wrapping_sub(self.caret)	c	unguarded subtraction; underflow gives huge value
+ui/kasane/widgets/src/ui/widgets.ksnl	348	i = i.wrapping_add(1usize)	a	guard: while i < self.caret {
+ui/kasane/widgets/src/ui/widgets.ksnl	359	j = j.wrapping_add(1usize)	a	guard: while j < comp.len() {
+ui/kasane/widgets/src/ui/widgets.ksnl	370	rest = rest.wrapping_add(1usize)	a	guard: while rest < n {
+ui/kasane/widgets/src/ui/widgets.ksnl	444	k = k.wrapping_add(1usize)	a	guard: while k < c.len() {
+ui/kasane/widgets/src/ui/widgets.ksnl	498	while removed < hi.wrapping_sub(lo) {	c	unguarded subtraction; underflow gives huge value
+ui/kasane/widgets/src/ui/widgets.ksnl	503	removed = removed.wrapping_add(1usize)	a	guard: while removed < hi.wrapping_sub(lo) {
+ui/kasane/widgets/src/ui/widgets.ksnl	511	match self.text.insert(lo.wrapping_add(k), b) {	c	unguarded addition; overflow wraps to small value
+ui/kasane/widgets/src/ui/widgets.ksnl	515	k = k.wrapping_add(1usize)	a	guard: while k < bytes.len() {
+ui/kasane/widgets/src/ui/widgets.ksnl	517	self.caret = lo.wrapping_add(bytes.len())	c	unguarded addition; overflow wraps to small value
+ui/kasane/widgets/src/ui/widgets.ksnl	552	for i in core.iter.range(idx.wrapping_add(1usize), n) {	d	enclosing for/range bound
+ui/kasane/widgets/src/ui/widgets.ksnl	567	i = i.wrapping_sub(1usize)	a	guard: while i > 0usize {
+apps/wiki/src/wiki/csrf.ksnl	24	let hi = b.wrapping_shr(4u32)	b	hash/PRNG/bit op: wiki.csrf.generate_token
+apps/wiki/src/wiki/csrf.ksnl	41	match char.try_from_u32(u32.from_u8(b'0'.wrapping_add(v))) {	c	unguarded addition; overflow wraps to small value
+apps/wiki/src/wiki/csrf.ksnl	46	match char.try_from_u32(u32.from_u8(b'a'.wrapping_add(v.wrapping_sub(10u8)))) {	c	unguarded addition; overflow wraps to small value
+apps/wiki/src/wiki/csrf.ksnl	46	match char.try_from_u32(u32.from_u8(b'a'.wrapping_add(v.wrapping_sub(10u8)))) {	c	unguarded subtraction; underflow gives huge value
+apps/wiki/src/wiki/html.ksnl	63	let at = i.wrapping_sub(1usize)	a	guard: while i > 0usize {
+apps/wiki/src/wiki/html.ksnl	174	let at = i.wrapping_sub(1usize)	a	guard: while i > 0usize {
+apps/wiki/src/wiki/store.ksnl	155	let cut = fname.len().wrapping_sub(3usize)	a	guard: if fname.len() > 3usize && fname.ends_with(".md") {
+apps/shortener_https/src/shortener_https/code.ksnl	10	base = b'a'.wrapping_sub(10u8)	c	unguarded subtraction; underflow gives huge value
+apps/shortener_https/src/shortener_https/code.ksnl	12	match char.try_from_u32(u32.from_u8(base.wrapping_add(d))) {	c	unguarded addition; overflow wraps to small value
+apps/shortener_https/src/shortener_https/code.ksnl	41	let at = len.wrapping_sub(k).wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+apps/shortener_https/src/shortener_https/code.ksnl	41	let at = len.wrapping_sub(k).wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+apps/shortener_https/src/shortener_https/json.ksnl	45	let high = unit.wrapping_shr(4u32)	b	hash/PRNG/bit op: shortener_https.json.push_control
+apps/notes/src/notes/cmd.ksnl	20	let body = match std.env.arg(start.wrapping_add(1usize)) {	c	unguarded addition; overflow wraps to small value
+apps/notes/src/notes/cmd.ksnl	29	let mut i = start.wrapping_add(2usize)	c	unguarded addition; overflow wraps to small value
+apps/notes/src/notes/cmd.ksnl	39	i = i.wrapping_add(1usize)	a	guard: while i < n {
+apps/notes/src/notes/cmd.ksnl	121	i = i.wrapping_add(1usize)	a	guard: while i < n {
+apps/notes/src/notes/cmd.ksnl	156	i = i.wrapping_add(1usize)	d	counter loop; bounded by loop cond: while i < n {
+apps/notes/src/notes/cmd.ksnl	196	let pad_count = width.wrapping_sub(text.len())	c	unguarded subtraction; underflow gives huge value
+apps/notes/src/notes/store.ksnl	64	let base = match name.split_at(name.len().wrapping_sub(5usize)) {	a	guard: if name.len() > 5usize && name.ends_with(".json") {
+apps/notes/src/notes/store.ksnl	113	Ok(max.wrapping_add(1i64))	d	enclosing for/range bound
+apps/csvtool/src/csvtool/agg.ksnl	18	self.rows = self.rows.wrapping_add(1i64)	c	unguarded addition; overflow wraps to small value
+apps/csvtool/src/csvtool/agg.ksnl	21	self.numeric = self.numeric.wrapping_add(1i64)	c	unguarded addition; overflow wraps to small value
+apps/csvtool/src/csvtool/agg.ksnl	71	let d = c.to_u32().wrapping_sub('0'.to_u32())	c	unguarded subtraction; underflow gives huge value
+apps/csvtool/src/csvtool/agg.ksnl	218	int_len = int_len.wrapping_add(1usize)	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+apps/csvtool/src/csvtool/agg.ksnl	235	frac = frac.wrapping_mul(10i64).wrapping_add(d)	b	hash/PRNG/bit op: csvtool.agg.parse_num
+apps/csvtool/src/csvtool/agg.ksnl	235	frac = frac.wrapping_mul(10i64).wrapping_add(d)	c	unguarded addition; overflow wraps to small value
+apps/csvtool/src/csvtool/agg.ksnl	236	frac_len = frac_len.wrapping_add(1usize)	a	guard: Some(d) => if frac_len < 2usize {
+apps/csvtool/src/csvtool/agg.ksnl	247	frac = frac.wrapping_mul(10i64)	b	hash/PRNG/bit op: csvtool.agg.parse_num
+apps/csvtool/src/csvtool/cmd.ksnl	104	line.push_u64(u64.from_usize(i.wrapping_add(1usize)))?	d	enclosing for/range bound
+apps/csvtool/src/csvtool/cmd.ksnl	126	let key_spec = csvtool.cmd.arg_at(start.wrapping_add(1usize))?	c	unguarded addition; overflow wraps to small value
+apps/csvtool/src/csvtool/cmd.ksnl	127	let val_spec = csvtool.cmd.arg_at(start.wrapping_add(2usize))?	c	unguarded addition; overflow wraps to small value
+apps/csvtool/src/csvtool/cmd.ksnl	152	let n_text = csvtool.cmd.arg_at(start.wrapping_add(1usize))?	c	unguarded addition; overflow wraps to small value
+apps/csvtool/src/csvtool/cmd.ksnl	172	r = r.wrapping_add(1usize)	a	guard: while r < total && r < n {
+apps/csvtool/src/csvtool/cmd.ksnl	251	let mut i = start.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+apps/csvtool/src/csvtool/cmd.ksnl	261	i = i.wrapping_add(1usize)	a	guard: while i < n {
+apps/csvtool/src/csvtool/parse.ksnl	127	tabs = tabs.wrapping_add(1usize)	d	enclosing for/range bound
+apps/csvtool/src/csvtool/parse.ksnl	130	commas = commas.wrapping_add(1usize)	d	enclosing for/range bound
+apps/csvtool/src/csvtool/table.ksnl	33	let idx = n.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+apps/csvtool/src/csvtool/table.ksnl	82	let d = usize.from_u32(c.to_u32().wrapping_sub('0'.to_u32()))	c	unguarded subtraction; underflow gives huge value
+apps/todo/src/todo/auth.ksnl	10	let hi = todo.auth.nibble_to_char(u64.from_u8(*b).wrapping_shr(4u32) & 15u64)?	b	hash/PRNG/bit op: todo.auth.bytes_to_hex
+apps/todo/src/todo/auth.ksnl	14	i = i.wrapping_add(1usize)	a	guard: while i < bytes.len() {
+apps/todo/src/todo/auth.ksnl	35	h = h.wrapping_mul(31u64).wrapping_add(u64.from_u8(*b))	b	hash/PRNG/bit op: todo.auth.hash_bytes
+apps/todo/src/todo/auth.ksnl	35	h = h.wrapping_mul(31u64).wrapping_add(u64.from_u8(*b))	b	hash/PRNG/bit op: todo.auth.hash_bytes
+apps/todo/src/todo/auth.ksnl	36	i = i.wrapping_add(1usize)	b	hash/PRNG/bit op: todo.auth.hash_bytes
+apps/todo/src/todo/auth.ksnl	65	let code = n.wrapping_add(48u64)	a	guard: if n < 10u64 {
+apps/todo/src/todo/auth.ksnl	75	let code = n.wrapping_sub(10u64).wrapping_add(97u64)	c	unguarded subtraction; underflow gives huge value
+apps/todo/src/todo/auth.ksnl	75	let code = n.wrapping_sub(10u64).wrapping_add(97u64)	c	unguarded addition; overflow wraps to small value
+apps/todo/src/todo/auth.ksnl	90	let shift = 15u32.wrapping_sub(i).wrapping_mul(4u32)	c	unguarded subtraction; underflow gives huge value
+apps/todo/src/todo/auth.ksnl	90	let shift = 15u32.wrapping_sub(i).wrapping_mul(4u32)	b	hash/PRNG/bit op: todo.auth.u64_to_hex
+apps/todo/src/todo/auth.ksnl	91	let nibble = n.wrapping_shr(shift) & 15u64	b	hash/PRNG/bit op: todo.auth.u64_to_hex
+apps/todo/src/todo/model.ksnl	249	base = b'a'.wrapping_sub(10u8)	c	unguarded subtraction; underflow gives huge value
+apps/todo/src/todo/model.ksnl	252	match char.try_from_u32(u32.from_u8(base.wrapping_add(d))) {	c	unguarded addition; overflow wraps to small value
+apps/todo/src/todo/model.ksnl	272	let high = c.to_u32().wrapping_shr(4u32)	b	hash/PRNG/bit op: todo.model.push_quoted
+apps/todo/src/todo/router.ksnl	52	let after_name_start = start.wrapping_add(name.len())	c	unguarded addition; overflow wraps to small value
+apps/todo/src/todo/router.ksnl	115	let expires_at = now_secs.wrapping_add(ttl_i64)	c	unguarded addition; overflow wraps to small value
+apps/todo/src/todo/router.ksnl	157	Some(p) => start.wrapping_add(p)	a	guard: while start < query.len() {
+apps/todo/src/todo/router.ksnl	161	let prev_start = eq_pos.wrapping_sub(1usize)	a	guard: if eq_pos > 0usize {
+apps/todo/src/todo/router.ksnl	171	start = eq_pos.wrapping_add(name.len())	c	unguarded addition; overflow wraps to small value
+apps/todo/src/todo/router.ksnl	175	let after_name_start = eq_pos.wrapping_add(name.len())	c	unguarded addition; overflow wraps to small value
+apps/todo/src/todo/router.ksnl	184	let after_eq_start = after_name_start.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+apps/todo/src/todo/router.ksnl	190	Some(p) => after_eq_start.wrapping_add(p)	c	unguarded addition; overflow wraps to small value
+apps/todo/src/todo/router.ksnl	194	let value_len = amp_pos.wrapping_sub(value_start)	c	unguarded subtraction; underflow gives huge value
+apps/todo/src/todo/router.ksnl	403	let (_, rest) = match path.split_at(p.wrapping_add(1usize)) {	c	unguarded addition; overflow wraps to small value
+apps/todo/src/todo/store.ksnl	35	let id = id_base.wrapping_add(1i64)	c	unguarded addition; overflow wraps to small value
+apps/todo/src/todo/store.ksnl	132	let id = id_base.wrapping_add(1i64)	c	unguarded addition; overflow wraps to small value
+apps/todo/src/todo/store.ksnl	200	i = i.wrapping_add(1usize)	a	guard: while i < self.sessions.len() {
+apps/todo/src/todo/store.ksnl	506	let offset = page.saturating_sub(1usize).wrapping_mul(page_size)	b	hash/PRNG/bit op: todo.store.Store.search
+spec/stdlib/alloc/arena.ksnl	54	self.live = self.live.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/alloc/arena.ksnl	70	let want = self.slots.cap().wrapping_mul(2usize).wrapping_add(4usize)	b	hash/PRNG/bit op: alloc.arena.Arena.insert
+spec/stdlib/alloc/arena.ksnl	70	let want = self.slots.cap().wrapping_mul(2usize).wrapping_add(4usize)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/alloc/arena.ksnl	79	let index = self.slots.len().wrapping_sub(1usize)	a	guard: if self.slots.len() >= self.slots.cap() {
+spec/stdlib/alloc/arena.ksnl	80	self.live = self.live.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/alloc/arena.ksnl	125	let bumped = generation.wrapping_add(1u32)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/alloc/arena.ksnl	127	self.live = self.live.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/alloc/collections.ksnl	123	state = state ^ state.wrapping_shl(13u32)	b	hash/PRNG/bit op: alloc.collections.BtreeMap.insert
+spec/stdlib/alloc/collections.ksnl	124	state = state ^ state.wrapping_shr(7u32)	b	hash/PRNG/bit op: alloc.collections.BtreeMap.insert
+spec/stdlib/alloc/collections.ksnl	125	state = state ^ state.wrapping_shl(17u32)	b	hash/PRNG/bit op: alloc.collections.BtreeMap.insert
+spec/stdlib/alloc/collections.ksnl	137	prio: state.wrapping_mul(11_400_714_819_323_198_485u64)	b	hash/PRNG/bit op: alloc.collections.BtreeMap.insert
+spec/stdlib/alloc/collections.ksnl	143	let want = self.nodes.cap().wrapping_mul(2usize).wrapping_add(4usize)	b	hash/PRNG/bit op: alloc.collections.BtreeMap.insert
+spec/stdlib/alloc/collections.ksnl	143	let want = self.nodes.cap().wrapping_mul(2usize).wrapping_add(4usize)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/alloc/collections.ksnl	318	let last = self.nodes.len().wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/alloc/collections.ksnl	411	self.slots.wrapping_shr(2u32)	b	hash/PRNG/bit op: alloc.collections.HashMap.base
+spec/stdlib/alloc/collections.ksnl	435	w = w.wrapping_add(1usize)	b	hash/PRNG/bit op: alloc.collections.HashMap.compact
+spec/stdlib/alloc/collections.ksnl	466	let mask = slots.wrapping_sub(1usize)	b	hash/PRNG/bit op: alloc.collections.HashMap.find_hashed
+spec/stdlib/alloc/collections.ksnl	477	i = i.wrapping_add(1usize) & mask	b	hash/PRNG/bit op: alloc.collections.HashMap.find_hashed
+spec/stdlib/alloc/collections.ksnl	480	let p = base.wrapping_add(e).wrapping_sub(1usize)	b	hash/PRNG/bit op: alloc.collections.HashMap.find_hashed
+spec/stdlib/alloc/collections.ksnl	480	let p = base.wrapping_add(e).wrapping_sub(1usize)	b	hash/PRNG/bit op: alloc.collections.HashMap.find_hashed
+spec/stdlib/alloc/collections.ksnl	495	i = i.wrapping_add(1usize) & mask	b	hash/PRNG/bit op: alloc.collections.HashMap.find_hashed
+spec/stdlib/alloc/collections.ksnl	506	let mask = slots.wrapping_sub(1usize)	b	hash/PRNG/bit op: alloc.collections.HashMap.find_str
+spec/stdlib/alloc/collections.ksnl	517	i = i.wrapping_add(1usize) & mask	b	hash/PRNG/bit op: alloc.collections.HashMap.find_str
+spec/stdlib/alloc/collections.ksnl	520	let p = base.wrapping_add(e).wrapping_sub(1usize)	b	hash/PRNG/bit op: alloc.collections.HashMap.find_str
+spec/stdlib/alloc/collections.ksnl	520	let p = base.wrapping_add(e).wrapping_sub(1usize)	b	hash/PRNG/bit op: alloc.collections.HashMap.find_str
+spec/stdlib/alloc/collections.ksnl	535	i = i.wrapping_add(1usize) & mask	b	hash/PRNG/bit op: alloc.collections.HashMap.find_str
+spec/stdlib/alloc/collections.ksnl	637	let used = self.cells.len().wrapping_sub(self.base())	b	hash/PRNG/bit op: alloc.collections.HashMap.insert
+spec/stdlib/alloc/collections.ksnl	643	if used.wrapping_add(1usize).wrapping_mul(2usize) > self.slots {	b	hash/PRNG/bit op: alloc.collections.HashMap.insert
+spec/stdlib/alloc/collections.ksnl	643	if used.wrapping_add(1usize).wrapping_mul(2usize) > self.slots {	b	hash/PRNG/bit op: alloc.collections.HashMap.insert
+spec/stdlib/alloc/collections.ksnl	648	if n.wrapping_add(1usize).wrapping_mul(2usize) > self.slots {	b	hash/PRNG/bit op: alloc.collections.HashMap.insert
+spec/stdlib/alloc/collections.ksnl	648	if n.wrapping_add(1usize).wrapping_mul(2usize) > self.slots {	b	hash/PRNG/bit op: alloc.collections.HashMap.insert
+spec/stdlib/alloc/collections.ksnl	650	self.slots.wrapping_mul(2usize)	b	hash/PRNG/bit op: alloc.collections.HashMap.insert
+spec/stdlib/alloc/collections.ksnl	668	let want = self.cells.cap().wrapping_mul(2usize).wrapping_add(4usize)	b	hash/PRNG/bit op: alloc.collections.HashMap.insert
+spec/stdlib/alloc/collections.ksnl	668	let want = self.cells.cap().wrapping_mul(2usize).wrapping_add(4usize)	b	hash/PRNG/bit op: alloc.collections.HashMap.insert
+spec/stdlib/alloc/collections.ksnl	683	let pos = self.cells.len().wrapping_sub(1usize)	b	hash/PRNG/bit op: alloc.collections.HashMap.insert
+spec/stdlib/alloc/collections.ksnl	702	if let Some(cell) = self.cells.get(i.wrapping_shr(2u32)) {	b	hash/PRNG/bit op: alloc.collections.HashMap.lane_get
+spec/stdlib/alloc/collections.ksnl	710	word.wrapping_shr(32u32)	b	hash/PRNG/bit op: alloc.collections.HashMap.lane_get
+spec/stdlib/alloc/collections.ksnl	724	if let Some(cell) = self.cells.get_mut(i.wrapping_shr(2u32)) {	b	hash/PRNG/bit op: alloc.collections.HashMap.lane_set
+spec/stdlib/alloc/collections.ksnl	739	wide.wrapping_shl(32u32)	b	hash/PRNG/bit op: alloc.collections.HashMap.lane_set
+spec/stdlib/alloc/collections.ksnl	758	self.cells.len().wrapping_sub(self.base()).wrapping_sub(self.dead)	b	hash/PRNG/bit op: alloc.collections.HashMap.len
+spec/stdlib/alloc/collections.ksnl	758	self.cells.len().wrapping_sub(self.base()).wrapping_sub(self.dead)	b	hash/PRNG/bit op: alloc.collections.HashMap.len
+spec/stdlib/alloc/collections.ksnl	775	let mask = slots.wrapping_sub(1usize)	b	hash/PRNG/bit op: alloc.collections.HashMap.place
+spec/stdlib/alloc/collections.ksnl	776	let v = h & (4_294_967_295usize ^ mask) | pos.wrapping_sub(self.base()).wrapping_add(1usize)	b	hash/PRNG/bit op: alloc.collections.HashMap.place
+spec/stdlib/alloc/collections.ksnl	776	let v = h & (4_294_967_295usize ^ mask) | pos.wrapping_sub(self.base()).wrapping_add(1usize)	b	hash/PRNG/bit op: alloc.collections.HashMap.place
+spec/stdlib/alloc/collections.ksnl	783	i = i.wrapping_add(1usize) & mask	b	hash/PRNG/bit op: alloc.collections.HashMap.place
+spec/stdlib/alloc/collections.ksnl	789	let n = self.cells.len().wrapping_sub(old)	b	hash/PRNG/bit op: alloc.collections.HashMap.rebuild
+spec/stdlib/alloc/collections.ksnl	790	let total = slots.wrapping_shr(2u32).wrapping_add(n)	b	hash/PRNG/bit op: alloc.collections.HashMap.rebuild
+spec/stdlib/alloc/collections.ksnl	790	let total = slots.wrapping_shr(2u32).wrapping_add(n)	b	hash/PRNG/bit op: alloc.collections.HashMap.rebuild
+spec/stdlib/alloc/collections.ksnl	792	match self.cells.grow(total.wrapping_mul(2usize)) {	b	hash/PRNG/bit op: alloc.collections.HashMap.rebuild
+spec/stdlib/alloc/collections.ksnl	807	let mid = old.wrapping_add(n)	b	hash/PRNG/bit op: alloc.collections.HashMap.rebuild
+spec/stdlib/alloc/collections.ksnl	847	self.dead = self.dead.wrapping_add(1usize)	b	hash/PRNG/bit op: alloc.collections.HashMap.remove
+spec/stdlib/alloc/collections.ksnl	867	self.dead = self.dead.wrapping_add(1usize)	b	hash/PRNG/bit op: alloc.collections.HashMap.remove_str
+spec/stdlib/alloc/collections.ksnl	884	b = b.wrapping_sub(1usize)	b	hash/PRNG/bit op: alloc.collections.HashMap.reverse_range
+spec/stdlib/alloc/collections.ksnl	892	a = a.wrapping_add(1usize)	b	hash/PRNG/bit op: alloc.collections.HashMap.reverse_range
+spec/stdlib/alloc/collections.ksnl	903	self.position = p.wrapping_add(1usize)	b	hash/PRNG/bit op: alloc.collections.HashMapIter.next
+spec/stdlib/alloc/collections.ksnl	937	self.count = self.count.wrapping_add(1usize)	b	hash/PRNG/bit op: alloc.collections.HashSet.insert
+spec/stdlib/alloc/collections.ksnl	969	self.count = self.count.wrapping_sub(1usize)	b	hash/PRNG/bit op: alloc.collections.HashSet.remove
+spec/stdlib/alloc/collections.ksnl	979	self.count = self.count.wrapping_sub(1usize)	b	hash/PRNG/bit op: alloc.collections.HashSet.remove_str
+spec/stdlib/alloc/fmt.ksnl	116	mag = u64.try_from_i64(value.wrapping_neg()).unwrap_or(0u64)	b	hash/PRNG/bit op: alloc.fmt.write_i64
+spec/stdlib/alloc/fmt.ksnl	129	div = div.wrapping_mul(radix)	b	hash/PRNG/bit op: alloc.fmt.write_mag
+spec/stdlib/alloc/fmt.ksnl	130	n = n.wrapping_add(1usize)	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+spec/stdlib/alloc/fmt.ksnl	134	total = n.wrapping_add(1usize)	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+spec/stdlib/alloc/fmt.ksnl	138	fill_n = spec.width.wrapping_sub(total)	a	guard: if spec.width > total {
+spec/stdlib/alloc/fmt.ksnl	165	fill_n = spec.width.wrapping_sub(text.len())	a	guard: if spec.width > text.len() {
+spec/stdlib/alloc/string.ksnl	64	shift = shift.wrapping_add(6u32)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/alloc/string.ksnl	67	let q = code.wrapping_shr(shift)	b	hash/PRNG/bit op: alloc.string.String.push
+spec/stdlib/alloc/string.ksnl	69	lead.wrapping_add(q)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/alloc/string.ksnl	71	128u32.wrapping_add(q.wrapping_shl(26u32).wrapping_shr(26u32))	c	unguarded addition; overflow wraps to small value
+spec/stdlib/alloc/string.ksnl	71	128u32.wrapping_add(q.wrapping_shl(26u32).wrapping_shr(26u32))	b	hash/PRNG/bit op: alloc.string.String.push
+spec/stdlib/alloc/string.ksnl	71	128u32.wrapping_add(q.wrapping_shl(26u32).wrapping_shr(26u32))	b	hash/PRNG/bit op: alloc.string.String.push
+spec/stdlib/alloc/string.ksnl	85	shift = shift.wrapping_sub(6u32)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/alloc/string.ksnl	133	zero.wrapping_sub(r)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/alloc/string.ksnl	138	Ok(d8) => match self.buf.insert_within_cap(start, d8.wrapping_add(48u8)) {	c	unguarded addition; overflow wraps to small value
+spec/stdlib/alloc/string.ksnl	198	Ok(d8) => match self.buf.insert_within_cap(start, d8.wrapping_add(48u8)) {	c	unguarded addition; overflow wraps to small value
+spec/stdlib/alloc/string.ksnl	234	if i.wrapping_add(m) <= n {	a	guard: while i < n {
+spec/stdlib/alloc/string.ksnl	240	if let Some(x) = hay.get(i.wrapping_add(k)) {	a	guard: while i < n {
+spec/stdlib/alloc/string.ksnl	246	k = k.wrapping_add(1usize)	a	guard: while k < m {
+spec/stdlib/alloc/string.ksnl	255	if let Some((piece, _after)) = rest.split_at(i.wrapping_sub(start)) {	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/alloc/string.ksnl	268	i = i.wrapping_add(m)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/alloc/string.ksnl	271	i = i.wrapping_add(1usize)	d	counter loop; bounded by loop cond: while k < m {
+spec/stdlib/alloc/string.ksnl	285	let want = self.buf.len().wrapping_add(extra)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/alloc/string.ksnl	288	let doubled = cap.wrapping_mul(2usize).wrapping_add(4usize)	b	hash/PRNG/bit op: alloc.string.String.reserve_bytes
+spec/stdlib/alloc/string.ksnl	288	let doubled = cap.wrapping_mul(2usize).wrapping_add(4usize)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/alloc/vec.ksnl	49	i = i.wrapping_add(1usize)	a	guard: while i < self.len() {
+spec/stdlib/alloc/vec.ksnl	62	Some(x) => match self.as_slice().get(keep.wrapping_sub(1usize)) {	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/alloc/vec.ksnl	74	keep = keep.wrapping_add(1usize)	d	enclosing for/range bound
+spec/stdlib/alloc/vec.ksnl	98	i = i.wrapping_add(1usize)	a	guard: while i < source.len() {
+spec/stdlib/alloc/vec.ksnl	110	match self.buf.grow(self.buf.cap().wrapping_mul(2usize).wrapping_add(4usize)) {	b	hash/PRNG/bit op: alloc.vec.Vec.insert
+spec/stdlib/alloc/vec.ksnl	110	match self.buf.grow(self.buf.cap().wrapping_mul(2usize).wrapping_add(4usize)) {	c	unguarded addition; overflow wraps to small value
+spec/stdlib/alloc/vec.ksnl	141	match self.buf.grow(self.buf.cap().wrapping_mul(2usize).wrapping_add(4usize)) {	b	hash/PRNG/bit op: alloc.vec.Vec.push
+spec/stdlib/alloc/vec.ksnl	141	match self.buf.grow(self.buf.cap().wrapping_mul(2usize).wrapping_add(4usize)) {	c	unguarded addition; overflow wraps to small value
+spec/stdlib/alloc/vec.ksnl	161	let want = self.buf.len().wrapping_add(additional)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/alloc/vec.ksnl	164	let doubled = cap.wrapping_mul(2usize).wrapping_add(4usize)	b	hash/PRNG/bit op: alloc.vec.Vec.reserve
+spec/stdlib/alloc/vec.ksnl	164	let doubled = cap.wrapping_mul(2usize).wrapping_add(4usize)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/core/hash.ksnl	25	self.state = (self.state ^ u64.from_u8(*b)).wrapping_mul(1_099_511_628_211u64)	b	hash/PRNG/bit op: core.hash.Fnv64.write_bytes
+spec/stdlib/core/hash.ksnl	27	i = i.wrapping_add(1usize)	b	hash/PRNG/bit op: core.hash.Fnv64.write_bytes
+spec/stdlib/core/hash.ksnl	35	state.state = (state.state ^ byte).wrapping_mul(1_099_511_628_211u64)	b	hash/PRNG/bit op: core.hash.fnv_int
+spec/stdlib/core/hash.ksnl	36	v = v.wrapping_shr(8u32)	b	hash/PRNG/bit op: core.hash.fnv_int
+spec/stdlib/core/slice.ksnl	5	let mid = lo.wrapping_add(hi.wrapping_sub(lo).wrapping_shr(1u32))	a	guard: while lo < hi {
+spec/stdlib/core/slice.ksnl	5	let mid = lo.wrapping_add(hi.wrapping_sub(lo).wrapping_shr(1u32))	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/core/slice.ksnl	5	let mid = lo.wrapping_add(hi.wrapping_sub(lo).wrapping_shr(1u32))	b	hash/PRNG/bit op: core.slice.binary_search
+spec/stdlib/core/slice.ksnl	9	lo = mid.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/core/slice.ksnl	32	i = i.wrapping_add(1usize)	a	guard: while i < a.len() {
+spec/stdlib/core/slice.ksnl	38	let n = hi.wrapping_sub(lo)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/core/slice.ksnl	39	let mut start = n.wrapping_shr(1u32)	b	hash/PRNG/bit op: core.slice.heap_s
+spec/stdlib/core/slice.ksnl	41	start = start.wrapping_sub(1usize)	a	guard: while start > 0usize {
+spec/stdlib/core/slice.ksnl	46	stop = stop.wrapping_sub(1usize)	a	guard: while stop > 1usize {
+spec/stdlib/core/slice.ksnl	47	core.slice.swap_s(s, lo, lo.wrapping_add(stop))	c	unguarded addition; overflow wraps to small value
+spec/stdlib/core/slice.ksnl	53	for i in core.iter.range(from.wrapping_add(1usize), to) {	d	enclosing for/range bound
+spec/stdlib/core/slice.ksnl	55	while j > from && core.slice.less_at(&*s, f, j, j.wrapping_sub(1usize)) {	a	guard: while j > from && core.slice.less_at(&*s, f, j, j.wrapping_sub(1usize)) {
+spec/stdlib/core/slice.ksnl	56	match s.swap(j, j.wrapping_sub(1usize)) {	a	guard: while j > from && core.slice.less_at(&*s, f, j, j.wrapping_sub(1usize)) {
+spec/stdlib/core/slice.ksnl	61	j = j.wrapping_sub(1usize)	a	guard: while j > from && core.slice.less_at(&*s, f, j, j.wrapping_sub(1usize)) {
+spec/stdlib/core/slice.ksnl	67	for i in core.iter.range(from.wrapping_add(1usize), to) {	d	enclosing for/range bound
+spec/stdlib/core/slice.ksnl	69	while j > from && core.slice.lt_s(&*s, j, j.wrapping_sub(1usize)) {	a	guard: while j > from && core.slice.lt_s(&*s, j, j.wrapping_sub(1usize)) {
+spec/stdlib/core/slice.ksnl	70	core.slice.swap_s(s, j, j.wrapping_sub(1usize))	a	guard: while j > from && core.slice.lt_s(&*s, j, j.wrapping_sub(1usize)) {
+spec/stdlib/core/slice.ksnl	71	j = j.wrapping_sub(1usize)	a	guard: while j > from && core.slice.lt_s(&*s, j, j.wrapping_sub(1usize)) {
+spec/stdlib/core/slice.ksnl	81	if hi.wrapping_sub(lo) <= 16usize {	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/core/slice.ksnl	89	depth = depth.wrapping_sub(1u32)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/core/slice.ksnl	90	let last = hi.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/core/slice.ksnl	91	let mid = lo.wrapping_add(hi.wrapping_sub(lo).wrapping_shr(1u32))	c	unguarded addition; overflow wraps to small value
+spec/stdlib/core/slice.ksnl	91	let mid = lo.wrapping_add(hi.wrapping_sub(lo).wrapping_shr(1u32))	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/core/slice.ksnl	91	let mid = lo.wrapping_add(hi.wrapping_sub(lo).wrapping_shr(1u32))	b	hash/PRNG/bit op: core.slice.intro_s
+spec/stdlib/core/slice.ksnl	102	let mut i = lo.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/core/slice.ksnl	106	i = i.wrapping_add(1usize)	a	guard: while i <= j && core.slice.lt_s(&*s, i, lo) {
+spec/stdlib/core/slice.ksnl	109	j = j.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/core/slice.ksnl	115	i = i.wrapping_add(1usize)	a	guard: while i <= j && core.slice.lt_s(&*s, lo, j) {
+spec/stdlib/core/slice.ksnl	116	j = j.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/core/slice.ksnl	119	if j.wrapping_sub(lo) < hi.wrapping_sub(j.wrapping_add(1usize)) {	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/core/slice.ksnl	119	if j.wrapping_sub(lo) < hi.wrapping_sub(j.wrapping_add(1usize)) {	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/core/slice.ksnl	119	if j.wrapping_sub(lo) < hi.wrapping_sub(j.wrapping_add(1usize)) {	c	unguarded addition; overflow wraps to small value
+spec/stdlib/core/slice.ksnl	121	lo = j.wrapping_add(1usize)	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+spec/stdlib/core/slice.ksnl	123	core.slice.intro_s(s, j.wrapping_add(1usize), hi, depth)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/core/slice.ksnl	173	j = j.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/core/slice.ksnl	179	i = i.wrapping_add(1usize)	a	guard: while i < j {
+spec/stdlib/core/slice.ksnl	192	let mut child = root.wrapping_mul(2usize).wrapping_add(1usize)	b	hash/PRNG/bit op: core.slice.sift_down_by
+spec/stdlib/core/slice.ksnl	192	let mut child = root.wrapping_mul(2usize).wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/core/slice.ksnl	196	let next = child.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/core/slice.ksnl	216	let mut child = root.wrapping_mul(2usize).wrapping_add(1usize)	b	hash/PRNG/bit op: core.slice.sift_s
+spec/stdlib/core/slice.ksnl	216	let mut child = root.wrapping_mul(2usize).wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/core/slice.ksnl	220	let next = child.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/core/slice.ksnl	221	if next < stop && core.slice.lt_s(&*s, base.wrapping_add(child), base.wrapping_add(next)) {	c	unguarded addition; overflow wraps to small value
+spec/stdlib/core/slice.ksnl	221	if next < stop && core.slice.lt_s(&*s, base.wrapping_add(child), base.wrapping_add(next)) {	c	unguarded addition; overflow wraps to small value
+spec/stdlib/core/slice.ksnl	224	if core.slice.lt_s(&*s, base.wrapping_add(root), base.wrapping_add(child)) {	c	unguarded addition; overflow wraps to small value
+spec/stdlib/core/slice.ksnl	224	if core.slice.lt_s(&*s, base.wrapping_add(root), base.wrapping_add(child)) {	c	unguarded addition; overflow wraps to small value
+spec/stdlib/core/slice.ksnl	225	core.slice.swap_s(s, base.wrapping_add(root), base.wrapping_add(child))	c	unguarded addition; overflow wraps to small value
+spec/stdlib/core/slice.ksnl	225	core.slice.swap_s(s, base.wrapping_add(root), base.wrapping_add(child))	c	unguarded addition; overflow wraps to small value
+spec/stdlib/core/slice.ksnl	244	let stop = core.slice.min_usize(start.wrapping_add(block), n)	a	guard: while start < n {
+spec/stdlib/core/slice.ksnl	252	let m = core.slice.min_usize(a.wrapping_add(width), n)	a	guard: while a < n {
+spec/stdlib/core/slice.ksnl	253	let b = core.slice.min_usize(m.wrapping_add(width), n)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/core/slice.ksnl	254	if m < b && core.slice.less_at(&*self, &compare, m, m.wrapping_sub(1usize)) {	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/core/slice.ksnl	259	width = width.wrapping_mul(2usize)	b	hash/PRNG/bit op: core.slice.sort_by
+spec/stdlib/core/slice.ksnl	268	k = k.wrapping_shr(1u32)	b	hash/PRNG/bit op: core.slice.sort_scalar
+spec/stdlib/core/slice.ksnl	269	depth = depth.wrapping_add(2u32)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/core/slice.ksnl	282	let mut start = n.wrapping_shr(1u32)	b	hash/PRNG/bit op: core.slice.sort_unstable_by
+spec/stdlib/core/slice.ksnl	284	start = start.wrapping_sub(1usize)	a	guard: while start > 0usize {
+spec/stdlib/core/slice.ksnl	289	stop = stop.wrapping_sub(1usize)	a	guard: while stop > 1usize {
+spec/stdlib/core/slice.ksnl	312	if m.wrapping_sub(a) == 1usize {	a	guard: if a >= m || m >= b {
+spec/stdlib/core/slice.ksnl	316	let h = i.wrapping_add(j.wrapping_sub(i) / 2usize)	a	guard: while i < j {
+spec/stdlib/core/slice.ksnl	316	let h = i.wrapping_add(j.wrapping_sub(i) / 2usize)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/core/slice.ksnl	318	i = h.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/core/slice.ksnl	326	if b.wrapping_sub(m) == 1usize {	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/core/slice.ksnl	330	let h = i.wrapping_add(j.wrapping_sub(i) / 2usize)	a	guard: while i < j {
+spec/stdlib/core/slice.ksnl	330	let h = i.wrapping_add(j.wrapping_sub(i) / 2usize)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/core/slice.ksnl	334	i = h.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/core/slice.ksnl	340	let mid = a.wrapping_add(b) / 2usize	c	unguarded addition; overflow wraps to small value
+spec/stdlib/core/slice.ksnl	341	let n = mid.wrapping_add(m)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/core/slice.ksnl	345	start = n.wrapping_sub(b)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/core/slice.ksnl	351	let p = n.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/core/slice.ksnl	353	let c = start.wrapping_add(r.wrapping_sub(start) / 2usize)	a	guard: while start < r {
+spec/stdlib/core/slice.ksnl	353	let c = start.wrapping_add(r.wrapping_sub(start) / 2usize)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/core/slice.ksnl	354	if core.slice.less_at(&*s, f, p.wrapping_sub(c), c) {	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/core/slice.ksnl	357	start = c.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/core/slice.ksnl	360	let stop = n.wrapping_sub(start)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/core/str.ksnl	10	let mut i = n.wrapping_sub(m)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/core/str.ksnl	17	match hay.get(i.wrapping_add(k)) {	c	unguarded addition; overflow wraps to small value
+spec/stdlib/core/str.ksnl	31	k = k.wrapping_add(1usize)	d	counter loop; bounded by loop cond: while k < m {
+spec/stdlib/core/str.ksnl	43	i = i.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/std/datetime.ksnl	27	std.datetime.push_digits(&mut out, self.year.wrapping_neg(), 4usize)?	b	hash/PRNG/bit op: std.datetime.DateTime.to_rfc3339
+spec/stdlib/std/datetime.ksnl	47	width = width.wrapping_sub(1usize)	a	guard: while width > 1usize && std.time.rem_floor(frac, 10i64) == 0i64 {
+spec/stdlib/std/datetime.ksnl	57	let secs = days.wrapping_mul(86_400i64).wrapping_add(self.hour.wrapping_mul(3600i64))	b	hash/PRNG/bit op: std.datetime.DateTime.unix_seconds
+spec/stdlib/std/datetime.ksnl	57	let secs = days.wrapping_mul(86_400i64).wrapping_add(self.hour.wrapping_mul(3600i64))	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/datetime.ksnl	57	let secs = days.wrapping_mul(86_400i64).wrapping_add(self.hour.wrapping_mul(3600i64))	b	hash/PRNG/bit op: std.datetime.DateTime.unix_seconds
+spec/stdlib/std/datetime.ksnl	58	secs.wrapping_add(self.minute.wrapping_mul(60i64)).wrapping_add(self.second)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/datetime.ksnl	58	secs.wrapping_add(self.minute.wrapping_mul(60i64)).wrapping_add(self.second)	b	hash/PRNG/bit op: std.datetime.DateTime.unix_seconds
+spec/stdlib/std/datetime.ksnl	58	secs.wrapping_add(self.minute.wrapping_mul(60i64)).wrapping_add(self.second)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/datetime.ksnl	62	let z = days.wrapping_add(719_468i64)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/datetime.ksnl	64	let doe = z.wrapping_sub(era.wrapping_mul(146_097i64))	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/std/datetime.ksnl	64	let doe = z.wrapping_sub(era.wrapping_mul(146_097i64))	b	hash/PRNG/bit op: std.datetime.date_of_days
+spec/stdlib/std/datetime.ksnl	68	let yoe_num = doe.wrapping_sub(c1).wrapping_add(c2).wrapping_sub(c3)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/std/datetime.ksnl	68	let yoe_num = doe.wrapping_sub(c1).wrapping_add(c2).wrapping_sub(c3)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/datetime.ksnl	68	let yoe_num = doe.wrapping_sub(c1).wrapping_add(c2).wrapping_sub(c3)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/std/datetime.ksnl	70	let c4 = yoe.wrapping_mul(365i64).wrapping_add(std.time.div_floor(yoe, 4i64))	b	hash/PRNG/bit op: std.datetime.date_of_days
+spec/stdlib/std/datetime.ksnl	70	let c4 = yoe.wrapping_mul(365i64).wrapping_add(std.time.div_floor(yoe, 4i64))	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/datetime.ksnl	71	let doy = doe.wrapping_sub(c4.wrapping_sub(std.time.div_floor(yoe, 100i64)))	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/std/datetime.ksnl	71	let doy = doe.wrapping_sub(c4.wrapping_sub(std.time.div_floor(yoe, 100i64)))	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/std/datetime.ksnl	72	let mp = std.time.div_floor(doy.wrapping_mul(5i64).wrapping_add(2i64), 153i64)	b	hash/PRNG/bit op: std.datetime.date_of_days
+spec/stdlib/std/datetime.ksnl	72	let mp = std.time.div_floor(doy.wrapping_mul(5i64).wrapping_add(2i64), 153i64)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/datetime.ksnl	73	let c5 = std.time.div_floor(mp.wrapping_mul(153i64).wrapping_add(2i64), 5i64)	b	hash/PRNG/bit op: std.datetime.date_of_days
+spec/stdlib/std/datetime.ksnl	73	let c5 = std.time.div_floor(mp.wrapping_mul(153i64).wrapping_add(2i64), 5i64)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/datetime.ksnl	74	let day = doy.wrapping_sub(c5).wrapping_add(1i64)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/std/datetime.ksnl	74	let day = doy.wrapping_sub(c5).wrapping_add(1i64)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/datetime.ksnl	76	mp.wrapping_sub(9i64)	a	guard: let month = if mp >= 10i64 {
+spec/stdlib/std/datetime.ksnl	78	mp.wrapping_add(3i64)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/datetime.ksnl	80	let y = yoe.wrapping_add(era.wrapping_mul(400i64))	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/datetime.ksnl	80	let y = yoe.wrapping_add(era.wrapping_mul(400i64))	b	hash/PRNG/bit op: std.datetime.date_of_days
+spec/stdlib/std/datetime.ksnl	82	y.wrapping_add(1i64)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/datetime.ksnl	91	year.wrapping_sub(1i64)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/std/datetime.ksnl	96	let yoe = y.wrapping_sub(era.wrapping_mul(400i64))	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/std/datetime.ksnl	96	let yoe = y.wrapping_sub(era.wrapping_mul(400i64))	b	hash/PRNG/bit op: std.datetime.days_from_civil
+spec/stdlib/std/datetime.ksnl	98	month.wrapping_sub(3i64)	a	guard: let mp = if month > 2i64 {
+spec/stdlib/std/datetime.ksnl	100	month.wrapping_add(9i64)	a	guard: let y = if month <= 2i64 {
+spec/stdlib/std/datetime.ksnl	102	let c1 = std.time.div_floor(mp.wrapping_mul(153i64).wrapping_add(2i64), 5i64)	b	hash/PRNG/bit op: std.datetime.days_from_civil
+spec/stdlib/std/datetime.ksnl	102	let c1 = std.time.div_floor(mp.wrapping_mul(153i64).wrapping_add(2i64), 5i64)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/datetime.ksnl	103	let doy = c1.wrapping_add(day).wrapping_sub(1i64)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/datetime.ksnl	103	let doy = c1.wrapping_add(day).wrapping_sub(1i64)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/std/datetime.ksnl	104	let c2 = yoe.wrapping_mul(365i64).wrapping_add(std.time.div_floor(yoe, 4i64))	b	hash/PRNG/bit op: std.datetime.days_from_civil
+spec/stdlib/std/datetime.ksnl	104	let c2 = yoe.wrapping_mul(365i64).wrapping_add(std.time.div_floor(yoe, 4i64))	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/datetime.ksnl	105	let doe = c2.wrapping_sub(std.time.div_floor(yoe, 100i64)).wrapping_add(doy)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/std/datetime.ksnl	105	let doe = c2.wrapping_sub(std.time.div_floor(yoe, 100i64)).wrapping_add(doy)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/datetime.ksnl	106	era.wrapping_mul(146_097i64).wrapping_add(doe).wrapping_sub(719_468i64)	b	hash/PRNG/bit op: std.datetime.days_from_civil
+spec/stdlib/std/datetime.ksnl	106	era.wrapping_mul(146_097i64).wrapping_add(doe).wrapping_sub(719_468i64)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/datetime.ksnl	106	era.wrapping_mul(146_097i64).wrapping_add(doe).wrapping_sub(719_468i64)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/std/datetime.ksnl	128	Some(i64.from_u8(c.wrapping_sub(b'0')))	a	guard: Some(c) => if *c >= b'0' && *c <= b'9' {
+spec/stdlib/std/datetime.ksnl	219	at = at.wrapping_add(1usize)	c	counter +1, not guarded; overflow only after 2^N iterations (low risk)
+spec/stdlib/std/datetime.ksnl	227	nanos = nanos.wrapping_mul(10i64).wrapping_add(d)	b	hash/PRNG/bit op: std.datetime.parse_rfc3339
+spec/stdlib/std/datetime.ksnl	227	nanos = nanos.wrapping_mul(10i64).wrapping_add(d)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/datetime.ksnl	228	kept = kept.wrapping_add(1usize)	a	guard: if kept < 9usize {
+spec/stdlib/std/datetime.ksnl	230	at = at.wrapping_add(1usize)	d	counter loop; bounded by loop cond: while scan {
+spec/stdlib/std/datetime.ksnl	241	nanos = nanos.wrapping_mul(10i64)	b	hash/PRNG/bit op: std.datetime.parse_rfc3339
+spec/stdlib/std/datetime.ksnl	242	kept = kept.wrapping_add(1usize)	a	guard: while kept < 9usize {
+spec/stdlib/std/datetime.ksnl	248	at = at.wrapping_add(1usize)	d	counter loop; bounded by loop cond: while kept < 9usize {
+spec/stdlib/std/datetime.ksnl	250	let oh = std.datetime.read_fixed(b, at.wrapping_add(1usize), 2usize)?	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/datetime.ksnl	251	std.datetime.expect_byte(b, at.wrapping_add(3usize), b':', b':')?	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/datetime.ksnl	252	let om = std.datetime.read_fixed(b, at.wrapping_add(4usize), 2usize)?	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/datetime.ksnl	254	return Err(std.datetime.Error.OutOfRange(at.wrapping_add(1usize)))	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/datetime.ksnl	256	offset = oh.wrapping_mul(60i64).wrapping_add(om)	b	hash/PRNG/bit op: std.datetime.parse_rfc3339
+spec/stdlib/std/datetime.ksnl	256	offset = oh.wrapping_mul(60i64).wrapping_add(om)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/datetime.ksnl	258	offset = offset.wrapping_neg()	b	hash/PRNG/bit op: std.datetime.parse_rfc3339
+spec/stdlib/std/datetime.ksnl	260	at = at.wrapping_add(6usize)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/datetime.ksnl	270	let secs = local.unix_seconds().wrapping_sub(offset.wrapping_mul(60i64))	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/std/datetime.ksnl	270	let secs = local.unix_seconds().wrapping_sub(offset.wrapping_mul(60i64))	b	hash/PRNG/bit op: std.datetime.parse_rfc3339
+spec/stdlib/std/datetime.ksnl	278	p = p.wrapping_mul(10i64)	b	hash/PRNG/bit op: std.datetime.push_digits
+spec/stdlib/std/datetime.ksnl	291	let pos = at.wrapping_add(k)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/datetime.ksnl	294	v = v.wrapping_mul(10i64).wrapping_add(d)	b	hash/PRNG/bit op: std.datetime.read_fixed
+spec/stdlib/std/datetime.ksnl	294	v = v.wrapping_mul(10i64).wrapping_add(d)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/fs.ksnl	45	i = i.wrapping_add(1usize)	d	counter loop; bounded by loop cond: while i <= total {
+spec/stdlib/std/fs.ksnl	122	let start = i.wrapping_add(1usize)	a	guard: while i < total {
+spec/stdlib/std/fs.ksnl	128	j = j.wrapping_add(1usize)	a	guard: while j < total {
+spec/stdlib/std/fs.ksnl	151	i = j.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/fs.ksnl	162	let gap = max.wrapping_sub(len)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/std/http.ksnl	669	return Some(usize.from_u8(c.wrapping_sub(b'0')))	a	guard: if c >= b'0' && c <= b'9' {
+spec/stdlib/std/http.ksnl	672	return Some(usize.from_u8(c.wrapping_sub(b'a').wrapping_add(10u8)))	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/std/http.ksnl	672	return Some(usize.from_u8(c.wrapping_sub(b'a').wrapping_add(10u8)))	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/http.ksnl	675	return Some(usize.from_u8(c.wrapping_sub(b'A').wrapping_add(10u8)))	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/std/http.ksnl	675	return Some(usize.from_u8(c.wrapping_sub(b'A').wrapping_add(10u8)))	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/http.ksnl	849	n = n.saturating_mul(10usize).saturating_add(usize.from_u8(c.wrapping_sub(b'0')))	a	guard: if c < b'0' || c > b'9' {
+spec/stdlib/std/http.ksnl	1058	st = st.wrapping_mul(10u16).wrapping_add(u16.from_u8(c.wrapping_sub(b'0')))	b	hash/PRNG/bit op: std.http.status_code
+spec/stdlib/std/http.ksnl	1058	st = st.wrapping_mul(10u16).wrapping_add(u16.from_u8(c.wrapping_sub(b'0')))	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/http.ksnl	1058	st = st.wrapping_mul(10u16).wrapping_add(u16.from_u8(c.wrapping_sub(b'0')))	a	guard: if c < b'0' || c > b'9' {
+spec/stdlib/std/json.ksnl	231	let slot = first.wrapping_add(k.wrapping_mul(2usize))	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	231	let slot = first.wrapping_add(k.wrapping_mul(2usize))	b	hash/PRNG/bit op: std.json.decode_field
+spec/stdlib/std/json.ksnl	234	let at = std.json.link_at(doc, slot.wrapping_add(1usize))?	d	enclosing for/range bound
+spec/stdlib/std/json.ksnl	292	let at = std.json.link_at(doc, first.wrapping_add(index))?	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	384	let at = std.json.link_at(doc, first.wrapping_add(1usize))?	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	398	i = i.wrapping_add(1usize)	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+spec/stdlib/std/json.ksnl	422	match src.get(pos.wrapping_add(k)) {	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	425	value = value.wrapping_shl(4u32) | d	b	hash/PRNG/bit op: std.json.hex4
+spec/stdlib/std/json.ksnl	436	let mut code = n.wrapping_add(87u32)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	438	code = n.wrapping_add(48u32)	a	guard: if n < 10u32 {
+spec/stdlib/std/json.ksnl	445	return Some(u32.from_u8(c.wrapping_sub(b'0')))	a	guard: if c >= b'0' && c <= b'9' {
+spec/stdlib/std/json.ksnl	448	return Some(u32.from_u8(c.wrapping_sub(b'a')).wrapping_add(10u32))	a	guard: if c >= b'a' && c <= b'f' {
+spec/stdlib/std/json.ksnl	448	return Some(u32.from_u8(c.wrapping_sub(b'a')).wrapping_add(10u32))	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	451	return Some(u32.from_u8(c.wrapping_sub(b'A')).wrapping_add(10u32))	a	guard: if c >= b'A' && c <= b'F' {
+spec/stdlib/std/json.ksnl	451	return Some(u32.from_u8(c.wrapping_sub(b'A')).wrapping_add(10u32))	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	553	let mut i = std.json.skip_ws(src, pos.wrapping_add(1usize))	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	557	let (child, after) = std.json.parse_value(doc, src, i, depth.wrapping_add(1usize))?	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	562	i = std.json.skip_ws(src, j.wrapping_add(1usize))	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+spec/stdlib/std/json.ksnl	577	Ok((at, close.wrapping_add(1usize)))	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	581	let next = pos.wrapping_add(2usize)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	582	match src.get(pos.wrapping_add(1usize)) {	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	623	let stop = pos.wrapping_add(want.len())	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	638	i = i.wrapping_add(1usize)	c	counter +1, not guarded; overflow only after 2^N iterations (low risk)
+spec/stdlib/std/json.ksnl	644	if src.get(i) == Some(&b'0') && int_end != i.wrapping_add(1usize) {	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	649	let frac_end = std.json.digits(src, i.wrapping_add(1usize))	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	650	if frac_end == i.wrapping_add(1usize) {	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	657	let mut k = i.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	660	k = k.wrapping_add(1usize)	c	counter +1, not guarded; overflow only after 2^N iterations (low risk)
+spec/stdlib/std/json.ksnl	676	let mut i = std.json.skip_ws(src, pos.wrapping_add(1usize))	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	689	let start = std.json.skip_ws(src, colon.wrapping_add(1usize))	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	690	let deeper = depth.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	697	i = std.json.skip_ws(src, j.wrapping_add(1usize))	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	709	let pairs = items.len().wrapping_shr(1u32)	b	hash/PRNG/bit op: std.json.parse_object
+spec/stdlib/std/json.ksnl	712	Ok((at, close.wrapping_add(1usize)))	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	717	let mut i = pos.wrapping_add(1usize)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	732	i = i.wrapping_add(1usize)	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+spec/stdlib/std/json.ksnl	737	Ok((out, i.wrapping_add(1usize)))	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	741	let first = std.json.hex4(src, pos.wrapping_add(2usize))?	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	743	let mut next = pos.wrapping_add(6usize)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	748	if src.get(next) != Some(&b'\\') || src.get(next.wrapping_add(1usize)) != Some(&b'u') {	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	751	let low = std.json.hex4(src, next.wrapping_add(2usize))?	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	755	let high_bits = first.wrapping_sub(55_296u32).wrapping_shl(10u32)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/std/json.ksnl	755	let high_bits = first.wrapping_sub(55_296u32).wrapping_shl(10u32)	b	hash/PRNG/bit op: std.json.parse_unicode
+spec/stdlib/std/json.ksnl	756	code = 65_536u32.wrapping_add(high_bits).wrapping_add(low.wrapping_sub(56_320u32))	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	756	code = 65_536u32.wrapping_add(high_bits).wrapping_add(low.wrapping_sub(56_320u32))	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	756	code = 65_536u32.wrapping_add(high_bits).wrapping_add(low.wrapping_sub(56_320u32))	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/std/json.ksnl	757	next = next.wrapping_add(6usize)	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	790	out.push(std.json.hex_char(unit.wrapping_shr(4u32) & 15u32))?	b	hash/PRNG/bit op: std.json.push_control
+spec/stdlib/std/json.ksnl	842	i = i.wrapping_add(1usize)	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+spec/stdlib/std/json.ksnl	894	std.json.write_link(doc, first.wrapping_add(k), out)?	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	904	let slot = first.wrapping_add(k.wrapping_mul(2usize))	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/json.ksnl	904	let slot = first.wrapping_add(k.wrapping_mul(2usize))	b	hash/PRNG/bit op: std.json.write
+spec/stdlib/std/json.ksnl	907	std.json.write_link(doc, slot.wrapping_add(1usize), out)?	d	enclosing for/range bound
+spec/stdlib/std/log.ksnl	58	done = done.wrapping_add(n)	a	guard: while done < bytes.len() {
+spec/stdlib/std/log.ksnl	86	i = i.wrapping_add(1usize)	a	guard: while i < fields.len() {
+spec/stdlib/std/net.ksnl	94	stop = stop.wrapping_add(1usize)	a	guard: while stop < 128usize {
+spec/stdlib/std/net.ksnl	126	start = i.wrapping_add(1usize)	d	enclosing for/range bound
+spec/stdlib/std/path.ksnl	7	match name.split_at(at.wrapping_add(1usize)) {	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/path.ksnl	22	Some(at) => match trimmed.split_at(at.wrapping_add(1usize)) {	c	unguarded addition; overflow wraps to small value
+spec/stdlib/std/path.ksnl	72	i = i.wrapping_sub(1usize)	a	guard: while i > 0usize {
+spec/stdlib/std/path.ksnl	107	match path.split_at(keep.wrapping_sub(1usize)) {	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/std/path.ksnl	109	keep = keep.wrapping_sub(1usize)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/std/time.ksnl	19	q.wrapping_sub(1i64)	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/std/time.ksnl	30	a.wrapping_sub(std.time.div_floor(a, b).wrapping_mul(b))	c	unguarded subtraction; underflow gives huge value
+spec/stdlib/std/time.ksnl	30	a.wrapping_sub(std.time.div_floor(a, b).wrapping_mul(b))	b	hash/PRNG/bit op: std.time.rem_floor
+bench/tasks/rle/reference.ksnl	43	let mut j = i.wrapping_add(1usize)	a	guard: while i < n {
+bench/tasks/rle/reference.ksnl	47	count = count.wrapping_add(1u32)	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+bench/tasks/rle/reference.ksnl	48	j = j.wrapping_add(1usize)	a	guard: while j < n {
+bench/tasks/matmul/reference.ksnl	82	let ai = i.wrapping_mul(a.cols).wrapping_add(k)	b	hash/PRNG/bit op: bench.mat_mul
+bench/tasks/matmul/reference.ksnl	82	let ai = i.wrapping_mul(a.cols).wrapping_add(k)	c	unguarded addition; overflow wraps to small value
+bench/tasks/matmul/reference.ksnl	84	let bj = k.wrapping_mul(b.cols).wrapping_add(j)	b	hash/PRNG/bit op: bench.mat_mul
+bench/tasks/matmul/reference.ksnl	84	let bj = k.wrapping_mul(b.cols).wrapping_add(j)	c	unguarded addition; overflow wraps to small value
+bench/tasks/matmul/reference.ksnl	86	acc = acc.wrapping_add(av.wrapping_mul(bv))	c	unguarded addition; overflow wraps to small value
+bench/tasks/matmul/reference.ksnl	86	acc = acc.wrapping_add(av.wrapping_mul(bv))	b	hash/PRNG/bit op: bench.mat_mul
+bench/tasks/matmul/reference.ksnl	87	k = k.wrapping_add(1usize)	a	guard: while k < a.cols {
+bench/tasks/matmul/reference.ksnl	93	j = j.wrapping_add(1usize)	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+bench/tasks/matmul/reference.ksnl	95	i = i.wrapping_add(1usize)	d	counter in while/loop; bounded by loop cond/len (usize, not syntactically guarded)
+bench/tasks/sieve/reference.ksnl	53	while p.wrapping_mul(p) < n {	b	hash/PRNG/bit op: bench.sieve
+bench/tasks/sieve/reference.ksnl	56	let mut mult = p.wrapping_mul(p)	b	hash/PRNG/bit op: bench.sieve
+bench/tasks/sieve/reference.ksnl	62	mult = mult.wrapping_add(p)	a	guard: while mult < n {
+bench/tasks/sieve/reference.ksnl	67	p = p.wrapping_add(1usize)	d	counter loop; bounded by loop cond: while mult < n {
+bench/tasks/count_bytes/reference.ksnl	11	*n = old.wrapping_add(1u32)	c	unguarded addition; overflow wraps to small value
+bench/tasks/count_bytes/reference.ksnl	19	i = i.wrapping_add(1usize)	a	guard: while i < bytes.len() {
+bench/tasks/split_str/reference.ksnl	38	match cur.split_at(pos.wrapping_add(sep_len)) {	c	unguarded addition; overflow wraps to small value
+bench/tasks/fact/reference.ksnl	5	match bench.fact_checked(n.wrapping_sub(1u64)) {	c	unguarded subtraction; underflow gives huge value
+bench/tasks/sort/reference.ksnl	10	while j > 0usize && bench.at(xs, j.wrapping_sub(1usize)) > key {	a	guard: while j > 0usize && bench.at(xs, j.wrapping_sub(1usize)) > key {
+bench/tasks/sort/reference.ksnl	11	let prev = bench.at(xs, j.wrapping_sub(1usize))	a	guard: while j > 0usize && bench.at(xs, j.wrapping_sub(1usize)) > key {
+bench/tasks/sort/reference.ksnl	13	j = j.wrapping_sub(1usize)	a	guard: while j > 0usize && bench.at(xs, j.wrapping_sub(1usize)) > key {
