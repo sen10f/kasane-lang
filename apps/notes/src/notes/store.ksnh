@@ -22,13 +22,9 @@ fn notes.store.Store.all_notes_len(self: &notes.store.Store) -> usize uses [] pa
 end notes.store.Store.all_notes_len
 
 fn notes.store.Store.get(self: &notes.store.Store, id: i64) -> Option<&notes.note.Note> uses [] panics never pub
-    let n = self.notes.len()
-    for i in core.iter.range(0usize, n) {
-        match self.get_at(i) {
-            Some(memo) => if memo.id == id {
-                return Some(memo)
-            }
-            None => return None
+    for memo in self.notes.iter() {
+        if memo.id == id {
+            return Some(memo)
         }
     }
     None
@@ -101,13 +97,9 @@ end notes.store.Store.new
 
 fn notes.store.Store.next_id(self: &notes.store.Store) -> Result<i64, notes.error.Error> uses [] panics never pub
     let mut max = 0i64
-    let n = self.notes.len()
-    for i in core.iter.range(0usize, n) {
-        match self.get_at(i) {
-            Some(memo) => if memo.id > max {
-                max = memo.id
-            }
-            None => return Err(error.Error.Corrupt)
+    for memo in self.notes.iter() {
+        if memo.id > max {
+            max = memo.id
         }
     }
     Ok(max.wrapping_add(1i64))
@@ -285,35 +277,10 @@ fn notes.store.note_path(dir: &str, id: i64) -> Result<std.string.String, alloc.
     Ok(p)
 end notes.store.note_path
 
-// 1 メモを JSON オブジェクトとしてシリアライズする（std.json.to_string は KIR ステージ1で未対応のため手動）。
+// 1 メモを JSON オブジェクトとしてシリアライズする（derive [ToJson] の to_json）。
 fn notes.store.note_to_json(n: &notes.note.Note) -> Result<std.string.String, alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut out = std.string.String.new()
-    out.push_str("{\"id\":")?
-    let id_spec = alloc.fmt.Spec.new()
-    alloc.fmt.write_i64(&mut out, n.id, &id_spec)?
-    out.push_str(",\"title\":")?
-    notes.store.write_json_string(&mut out, n.title.as_str())?
-    out.push_str(",\"body\":")?
-    notes.store.write_json_string(&mut out, n.body.as_str())?
-    out.push_str(",\"tags\":[")?
-    let tg = n.tags.as_slice()
-    let m = tg.len()
-    for i in core.iter.range(0usize, m) {
-        match tg.get(i) {
-            Some(tag) => {
-                if i > 0usize {
-                    out.push_str(",")?
-                }
-                notes.store.write_json_string(&mut out, tag.as_str())?
-            }
-            None => core.mem.drop(0u8)
-        }
-    }
-    out.push_str("],\"created_at\":")?
-    notes.store.write_json_string(&mut out, n.created_at.as_str())?
-    out.push_str(",\"updated_at\":")?
-    notes.store.write_json_string(&mut out, n.updated_at.as_str())?
-    out.push_str("}")?
+    n.to_json(&mut out)?
     Ok(out)
 end notes.store.note_to_json
 
@@ -362,27 +329,6 @@ fn notes.store.test_reset_dir() -> Result<(), notes.error.Error> uses [alloc, io
     std.fs.create_dir_all(notes.store.TEST_DIR)?
     Ok(())
 end notes.store.test_reset_dir
-
-fn notes.store.write_json_string(out: &mut std.string.String, text: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
-    out.push_str("\"")?
-    for c in text.chars() {
-        if c == '"' {
-            out.push_str("\\\"")?
-        } else if c == '\\' {
-            out.push_str("\\\\")?
-        } else if c == '\n' {
-            out.push_str("\\n")?
-        } else if c == '\r' {
-            out.push_str("\\r")?
-        } else if c == '\t' {
-            out.push_str("\\t")?
-        } else {
-            out.push(c)?
-        }
-    }
-    out.push_str("\"")?
-    Ok(())
-end notes.store.write_json_string
 
 test notes.store.Store.new.test_reset_and_load
     notes.store.test_reset_dir()?
