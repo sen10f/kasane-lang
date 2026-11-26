@@ -10,6 +10,7 @@
 #![allow(unused_unsafe)]
 
 pub mod dbg;
+mod netsys;
 
 use super::bc::*;
 use crate::interp::{py_float, py_float32};
@@ -128,11 +129,14 @@ pub struct Vm<'a> {
     pub(super) out_hook: Option<Box<dyn FnMut(u8, &[u8])>>,
     /// 最後の panic が起きたフレームの底。
     panic_base: usize,
+    /// `std.net` の読み・書きの期限 (記述子 → (読み, 書き))。
+    deadlines: std::collections::HashMap<i128, (Option<std::time::Instant>, Option<std::time::Instant>)>,
 }
 
 enum NetSock {
     Listener(std::net::TcpListener),
     Stream(std::net::TcpStream),
+    Udp(std::net::UdpSocket),
 }
 
 #[inline(always)]
@@ -237,7 +241,7 @@ impl<'a> Vm<'a> {
         // C の関数を呼ぶプログラムは、C が返す番地も読むので、領域の外も通す (FFI は `[unsafe]` の許可の内側)。
         // 標準ライブラリ (`std.` / `core.`) の extern は数えない (安全なプログラムで網を切らない)。
         super::arena::set_permissive(prog.ext.iter().any(|f| !(f.fqn.starts_with("std.") || f.fqn.starts_with("core."))));
-        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], result: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), files: Default::default(), cmds: Default::default(), bad_cmds: Default::default(), children: Default::default(), next_fd: 3, mt_on: false, top: 0, panic_at: None, cbs: vec![], vers: vec![prog as *const Prog], owned: vec![], hook: None, dbg: None, out_hook: None, panic_base: 0 }
+        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], result: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), files: Default::default(), cmds: Default::default(), bad_cmds: Default::default(), children: Default::default(), next_fd: 3, mt_on: false, top: 0, panic_at: None, cbs: vec![], vers: vec![prog as *const Prog], owned: vec![], hook: None, dbg: None, out_hook: None, panic_base: 0, deadlines: Default::default() }
     }
 
     /// 最後の panic の位置 (`in <関数> at <ファイル>:<行>`。デバッガと同じ形)。行表がない関数では `None`。
@@ -1207,23 +1211,42 @@ impl<'a> Vm<'a> {
                 Ins::NetRead { d, sock, buf, len } => {
                     use std::io::Read;
                     let (fd, p, n) = (r!(*sock) as i32 as i128, r!(*buf), r!(*len) as usize);
+                    let at = self.deadlines.get(&fd).and_then(|x| x.0);
                     let Some(NetSock::Stream(st)) = self.socks.get_mut(&fd) else { return Err(format!("読み出しできるのはストリームソケットだけ: {}", fd)) };
                     let mut tmp = vec![0u8; n];
-                    let nr = st.read(&mut tmp).map_err(|e| format!("read: {e}"))?;
-                    if nr > 0 {
-                        unsafe { std::ptr::copy_nonoverlapping(tmp.as_ptr(), addr(p, nr)?, nr) };
+                    match kir_exec::dl_call(st, at, false, |s| s.read(&mut tmp)) {
+                        Ok(nr) => {
+                            if nr > 0 {
+                                unsafe { std::ptr::copy_nonoverlapping(tmp.as_ptr(), addr(p, nr)?, nr) };
+                            }
+                            w!(*d, 0);
+                            w!(*d + 1, nr as u64);
+                        }
+                        Err(e) => fs_err(rp, &prog.aggs, *d, &e)?,
                     }
-                    w!(*d, 0);
-                    w!(*d + 1, nr as u64);
                 }
                 Ins::NetWrite { d, sock, buf, len } => {
                     use std::io::Write;
                     let (fd, p, n) = (r!(*sock) as i32 as i128, r!(*buf), r!(*len) as usize);
+                    let at = self.deadlines.get(&fd).and_then(|x| x.1);
                     let Some(NetSock::Stream(st)) = self.socks.get_mut(&fd) else { return Err(format!("書き込みできるのはストリームソケットだけ: {}", fd)) };
                     let bytes: &[u8] = if n == 0 { &[] } else { unsafe { std::slice::from_raw_parts(addr(p, n)? as *const u8, n) } };
-                    st.write_all(bytes).map_err(|e| format!("write: {e}"))?;
-                    w!(*d, 0);
-                    w!(*d + 1, n as u64);
+                    match kir_exec::dl_call(st, at, true, |s| s.write_all(bytes)) {
+                        Ok(()) => {
+                            w!(*d, 0);
+                            w!(*d + 1, n as u64);
+                        }
+                        Err(e) => fs_err(rp, &prog.aggs, *d, &e)?,
+                    }
+                }
+                Ins::NetSys { d, kind, argp, argn } => {
+                    let args: Vec<(usize, usize)> = (0..*argn as usize)
+                        .map(|k| {
+                            let e = unsafe { *f.pool.get_unchecked(*argp as usize + k) };
+                            ((e & 0xffff) as usize, (e >> 16) as usize)
+                        })
+                        .collect();
+                    self.net_sys(rp, &prog.aggs, *d, *kind, &args)?;
                 }
                 Ins::NetFlush { d, sock } => {
                     use std::io::Write;
@@ -1458,8 +1481,12 @@ impl<'a> Vm<'a> {
                 }
                 Ins::NetLocalPort { d, sock } => {
                     let fd = r!(*sock) as i32 as i128;
-                    let Some(NetSock::Listener(l)) = self.socks.get(&fd) else { return Err(format!("local_port できるのはリスナーソケットだけ: {}", fd)) };
-                    let port = l.local_addr().map(|a| a.port() as u64).map_err(|e| format!("local_port: {e}"))?;
+                    let la = match self.socks.get(&fd) {
+                        Some(NetSock::Listener(l)) => l.local_addr(),
+                        Some(NetSock::Udp(u)) => u.local_addr(),
+                        _ => return Err(format!("local_port できるのはリスナーソケットか UDP ソケットだけ: {}", fd)),
+                    };
+                    let port = la.map(|a| a.port() as u64).map_err(|e| format!("local_port: {e}"))?;
                     w!(*d, 0);
                     w!(*d + 1, port);
                 }

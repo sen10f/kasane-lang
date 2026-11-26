@@ -921,7 +921,10 @@ impl<'a> Fc<'a> {
             // OS の乱数 (`std.rand.fill_secure` / `from_entropy`) は VM 未対応 (木走査か参照実行器へ退避する)。
             Op::RandFill { buf, len, fatal } => Ins::RandFill { d, buf: self.s(*buf), len: self.s(*len), fatal: *fatal },
             // std.net の追加分 (タイムアウト・shutdown・アドレス・resolve・UDP) も VM 未対応 (木走査へ退避する)。
-            Op::NetSys { .. } => return Err("std.net の追加分は VM 未対応".into()),
+            Op::NetSys { kind, args } => {
+                let (argp, argn) = self.pool_slots(args);
+                Ins::NetSys { d, kind: *kind, argp, argn }
+            }
         };
         self.push(i);
         Ok(())
