@@ -1,0 +1,11 @@
+fn t.f(x: i32) -> i32 uses [] panics never
+    if x != 0i32 {
+        x - 1i32
+    } else {
+        0i32
+    }
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

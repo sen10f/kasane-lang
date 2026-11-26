@@ -1,0 +1,55 @@
+fn t.both(i: u8, n: u8) -> bool uses [] panics never
+    i < n && i + 1u8 < n
+end t.both
+
+fn t.early(x: u64) -> u64 uses [] panics never
+    if x == 0u64 {
+        return 0u64
+    }
+    x - 1u64
+end t.early
+
+fn t.last(xs: &[u8]) -> usize uses [] panics never
+    if xs.is_empty() {
+        return 0usize
+    }
+    xs.len() - 1usize
+end t.last
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.nz(x: u64) -> u64 uses [] panics never
+    if x != 0u64 {
+        x - 1u64
+    } else {
+        0u64
+    }
+end t.nz
+
+fn t.pred(x: u32) -> u32 uses [] panics never
+    if x >= 3u32 {
+        x - 3u32
+    } else {
+        0u32
+    }
+end t.pred
+
+fn t.pred1(x: i32) -> i32 uses [] panics never
+    if x > 0i32 {
+        x - 1i32
+    } else {
+        0i32
+    }
+end t.pred1
+
+fn t.up(xs: &[u8]) -> usize uses [] panics never
+    let mut i = 0usize
+    let mut acc = 0usize
+    while i < xs.len() {
+        acc = acc.wrapping_add(1usize)
+        i = i + 1usize
+    }
+    acc
+end t.up

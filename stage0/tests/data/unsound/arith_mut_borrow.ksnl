@@ -1,0 +1,17 @@
+fn t.bump(p: &mut u8) -> () uses [] panics never
+    *p = 255u8
+end t.bump
+
+fn t.f(n: u8) -> u8 uses [] panics never
+    let mut i = 0u8
+    if i < n {
+        t.bump(&mut i)
+        i + 1u8
+    } else {
+        0u8
+    }
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
