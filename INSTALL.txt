@@ -12,6 +12,7 @@ Kasane (ksn) 実行体の導入
 1. 適当なディレクトリで展開する:
 
      tar -xzf ksn-バージョン-x86_64-linux-gnu.tar.gz
+     cd ksn-バージョン-x86_64-linux-gnu
 
 2. `ksn` を PATH の通った場所に置く（例）:
 

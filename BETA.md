@@ -23,7 +23,7 @@ Kasane は「LLM が書き、機械が検証する、契約重視のシステム
 # ksn を PATH に置く（例）
 tar xzf ksn-<版>-x86_64-linux-gnu.tar.gz
 cd ksn-<版>-x86_64-linux-gnu
-# ksn と stdlib/ は同じディレクトリに置いたまま使います
+# ksn 単体で動作します（標準ライブラリは実行体に埋め込まれています）
 mkdir -p "$HOME/.local/opt" && cp -r . "$HOME/.local/opt/ksn"
 ln -sf "$HOME/.local/opt/ksn/ksn" "$HOME/.local/bin/ksn"
 export PATH="$HOME/.local/bin:$PATH"

@@ -12,7 +12,7 @@
 
 例はすべて `/home/kasane/kasane-verify/bin/current/ksn`（stage0 をビルドしない）で `ksn check` して確かめた。各例と期待診断は `docs/borrow_rules/check.py` で自動検証され、`python3 -I check.py` が全件 PASS する。`.ksnl` はコメントを書けないため、文中に注記を置く。
 
-注意：`alloc.arena.Arena<T, A>` / `alloc.arena.Handle<T>`（アリーナ＋世代つきハンドル、`設計_共有の取っ手.md` D1）は stdlib 未実装（規範シグネチャ案のみ）である。この文書の検証済みサンプルでは、参照を欄に置けない代替として「インデックス（位置の添字）を持ち、元データを関数の引数で渡す」形を採っている。アリーナ＋ハンドルは将来の stdlib 抽象化として同じ書き方（`Handle<T>` は `Copy` で欄・`Vec` に入る）で対応できる。
+注意：`alloc.arena.Arena<T, A>` / `alloc.arena.Handle<T>`（アリーナ＋世代つきハンドル、`設計_共有の取っ手.md` D1）は stdlib に実装済み（`spec/stdlib/alloc/arena.ksnl` + `.sig`）。この文書の検証済みサンプルでは、参照を欄に置けない代替として「インデックス（位置の添字）を持ち、元データを関数の引数で渡す」形を採っている。アリーナ＋ハンドルは同じ書き方（`Handle<T>` は `Copy` で欄・`Vec` に入る）で扱える。
 
 ## K1 `Copy` / 移動 / 線形の区別
 
