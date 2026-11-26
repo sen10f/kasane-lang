@@ -115,25 +115,19 @@ fn s1_dependency_cannot_grant_unsafe_to_the_roots_modules() {
     assert!(out.contains("E9012") || has(&out, "E5001"), "{}", out);
 }
 
-/// S1c: 依存の `.ksnh` が `.ksnl` と (コメントを除いて) 食い違えば E9050。一致していれば通る。
+/// 依存の `.ksnh` は読まず検査もしない (食い違っていても `.ksnl` だけで通る)。
 #[test]
-fn s1c_dependency_ksnh_mismatch_is_e9050() {
+fn dependency_ksnh_is_ignored() {
     let w = Work::new("s1c");
     two(
         &w,
         "fn a.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    std.io.print_line(dep.greeting())\nend a.main\n",
         "fn dep.greeting() -> &'static str uses [] panics never pub\n    \"DIFFERENT: the .ksnl that actually runs\"\nend dep.greeting\n",
     );
-    w.put("dep/src/dep.ksnh", "// returns the greeting text\nfn dep.greeting() -> &'static str uses [] panics never pub\n    \"hello from the reviewed .ksnh\"\nend dep.greeting\n");
-    let (out, rc) = w.check("a");
-    assert_ne!(rc, 0, "{}", out);
-    assert!(has(&out, "E9050") && out.contains("dependency `dep`"), "{}", out);
-    for cmd in ["run", "build", "test"] {
-        assert!(!w.ksn(&[cmd], "a").status.success(), "ksn {} must fail", cmd);
-    }
-    w.put("dep/src/dep.ksnh", "// returns the greeting text\nfn dep.greeting() -> &'static str uses [] panics never pub\n    \"DIFFERENT: the .ksnl that actually runs\"\nend dep.greeting\n");
+    w.put("dep/src/dep.ksnh", "// c\nfn dep.greeting() -> &'static str uses [] panics never pub\n    \"hello from the .ksnh\"\nend dep.greeting\n");
     let (out, rc) = w.check("a");
     assert_eq!(rc, 0, "{}", out);
+    assert!(!has(&out, "E9050"), "{}", out);
 }
 
 /// S2: 依存が `std.io.print_line` を定義できない。
