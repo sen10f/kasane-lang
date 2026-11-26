@@ -779,12 +779,22 @@ impl<'a> Fc<'a> {
                 self.last_pa = Some((inst.dst, self.code.len()));
                 Ins::PtrAdd { d, p: self.s(*p), off: self.s(*off) }
             }
+            Op::MemLoad { p, off } if opt_shape(&self.m.aggs, ty).is_some() => {
+                let (sb, pw) = opt_shape(&self.m.aggs, ty).unwrap_or_default();
+                let (pp, o2) = self.addr_of(*p);
+                Ins::LoadOpt { d, p: pp, off: o2 + *off, sb, pw }
+            }
             Op::MemLoad { p, off } => {
                 let Some(k) = lk(ty) else { return Err(format!("mem.load の型 {} が読めない", ty.name())) };
                 match fuse_pa(self, *p) {
                     Some((p, x)) => Ins::LoadX { d, p, x, off: *off, k },
                     None => load_ins(d, self.s(*p), *off, k),
                 }
+            }
+            Op::MemStore { ty: sty, p, off, v } if opt_shape(&self.m.aggs, *sty).is_some() => {
+                let (sb, pw) = opt_shape(&self.m.aggs, *sty).unwrap_or_default();
+                let (pp, o2) = self.addr_of(*p);
+                Ins::StoreOpt { p: pp, off: o2 + *off, v: self.s(*v), sb, pw }
             }
             Op::MemStore { ty: sty, p, off, v } => {
                 self.canon_val(*sty, *v);

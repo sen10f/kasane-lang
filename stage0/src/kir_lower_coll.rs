@@ -488,6 +488,10 @@ pub(super) fn load_elem(lw: &mut Lw, addr: VId, elem: Ty) -> VId {
             let r = lw.emit(Ty::Ref(true, Pointee::Agg(i)), Op::Bitcast { src: Ty::Ptr, a: addr });
             lw.emit(elem, Op::Load(r))
         }
+        Ty::Opt(p) => {
+            let r = lw.emit(Ty::Ref(true, Pointee::Opt(p)), Op::Bitcast { src: Ty::Ptr, a: addr });
+            lw.emit(elem, Op::Load(r))
+        }
         t => lw.emit(t, Op::MemLoad { p: addr, off: 0 }),
     }
 }
@@ -497,6 +501,10 @@ pub(super) fn store_elem(lw: &mut Lw, addr: VId, elem: Ty, v: VId) {
     match elem {
         Ty::Agg(i) => {
             let r = lw.emit(Ty::Ref(true, Pointee::Agg(i)), Op::Bitcast { src: Ty::Ptr, a: addr });
+            lw.emit(Ty::Unit, Op::Store { ptr: r, val: v });
+        }
+        Ty::Opt(p) => {
+            let r = lw.emit(Ty::Ref(true, Pointee::Opt(p)), Op::Bitcast { src: Ty::Ptr, a: addr });
             lw.emit(Ty::Unit, Op::Store { ptr: r, val: v });
         }
         t => {

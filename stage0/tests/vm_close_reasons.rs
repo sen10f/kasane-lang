@@ -30,3 +30,27 @@ end t.main
         "ok\n",
     );
 }
+
+#[test]
+fn option_array_with_const_length() {
+    vm_runs(
+        "vmc_opt_array",
+        r#"const t.N: usize = 3usize
+
+fn t.main() -> () uses [io.console] panics may
+    let d: [Option<u32>; t.N] = [None; t.N]
+    let e = [Some(1u32), None]
+    let mut n = 0usize
+    for x in e {
+        if let Some(v) = x {
+            n = n.wrapping_add(usize.from_u32(v))
+        }
+    }
+    core.check.eq(d.len(), 3usize)
+    core.check.eq(n, 1usize)
+    core.mem.drop(std.io.print_line("ok"))
+end t.main
+"#,
+        "ok\n",
+    );
+}

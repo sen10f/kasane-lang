@@ -17,7 +17,7 @@ use super::{Lw, LR};
 
 /// 配列の要素にできる型: 整数・浮動小数・bool・ptr、と所有物を持たない集成体 (値の写しで並べる)。
 fn elem_ok(lw: &Lw, t: Ty) -> bool {
-    t.is_int() || t.is_float() || matches!(t, Ty::Bool | Ty::Ptr) || (matches!(t, Ty::Agg(_)) && !owns_heap_pub(lw, t))
+    t.is_int() || t.is_float() || matches!(t, Ty::Bool | Ty::Ptr) || (matches!(t, Ty::Agg(_) | Ty::Opt(_) | Ty::Res(..)) && !owns_heap_pub(lw, t))
 }
 
 /// 要素 `size` バイトを `n` 個並べた領域の大きさ。`FrameBytes` の幅 (u32) に入らないときは `None` (溢れで panic させない)。
@@ -81,9 +81,22 @@ impl<'a> Lw<'a> {
         let f = nf(e);
         let Some(n) = (match &f[1] {
             crate::parser::V::N(s) => s.replace('_', "").parse::<u64>().ok(),
+            // 整数リテラルで書かれた定数 (`[x; t.N]`)
+            crate::parser::V::L(xs) if xs.len() == 2 && crate::check::st(&xs[0]) == "cname" => {
+                let name = crate::check::st(&xs[1]);
+                match self.p.defs.iter().find(|d| d.kw == "const" && d.name == name) {
+                    Some(d) => match d.init.as_ref() {
+                        Some(init) if crate::check::nname(init) == "Lit" && crate::check::st(&nf(init)[0]) == "int" => {
+                            super::parse_int(&nf(init)[1]).and_then(|v| u64::try_from(v).ok())
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            }
             _ => None,
         }) else {
-            return self.err(line, "配列の長さはリテラルだけ段階 1 の対象");
+            return self.err(line, "配列の長さはリテラルか整数リテラルの定数だけ段階 1 の対象");
         };
         let Some(x) = self.expr(&f[0])? else { return Ok(None) };
         let et = self.vty(x);
