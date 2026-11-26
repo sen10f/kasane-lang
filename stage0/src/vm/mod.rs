@@ -60,10 +60,6 @@ fn prepare(lo: &Lowered, entry: &str) -> Result<bc::Prog, String> {
     }
     let m = lo.module.reachable_from(&[entry, kir_lower::debug::ENTRY_DEBUG]);
     tick("reachable");
-    // `std.tls` (OpenSSL) は実際の記述子を要るが、VM のソケットは仮想の記述子なので走らせない。
-    if m.funcs.iter().any(|f| f.link.as_deref().map_or(false, |l| l.starts_with("libssl.so") || l.starts_with("libcrypto.so"))) {
-        return Err("std.tls は VM 未対応".into());
-    }
     // `std.task.block_on_threads` は複数のワーカーを前提にした意味 (取り消し・入れ子・panic の伝わり方) を持つ。VM の実行器は 1 本なので走らせない (木走査へ退避する)。
     if m.find("ksn.task.mt_begin").is_some() {
         return Err("std.task.block_on_threads は VM 未対応".into());
@@ -185,7 +181,7 @@ fn has_unsafe_block(prog: &Program) -> bool {
 
 const UNSAFE_REASON: &str = "unsafe ブロックを含むパッケージは木走査で走らせる (null・cast・add の生ポインタの検査)";
 
-/// 全テストを 1 回だけ下ろし、(`std.tls`・複数スレッドの実行器を含まなければ) バイトコードも 1 回だけ作る。
+/// 全テストを 1 回だけ下ろし、(複数スレッドの実行器を含まなければ) バイトコードも 1 回だけ作る。
 pub struct Suite {
     unsafe_pkg: bool,
     lo: Lowered,
@@ -200,7 +196,7 @@ pub fn lower_tests(prog: &Program, user: &[usize], tests: &[usize]) -> Suite {
     let mut roots = names.clone();
     roots.push(kir_lower::debug::ENTRY_DEBUG);
     let m = lo.module.reachable_from(&roots);
-    let special = m.funcs.iter().any(|f| f.link.as_deref().map_or(false, |l| l.starts_with("libssl.so") || l.starts_with("libcrypto.so"))) || m.find("ksn.task.mt_begin").is_some() || uses_net_async(&m);
+    let special = m.find("ksn.task.mt_begin").is_some() || uses_net_async(&m);
     let shared = if names.is_empty() || special || !crate::kir::verify_module(&m).is_empty() { None } else { Some(compile::compile(&m, &lo.lines)) };
     let snap = arena::snapshot();
     Suite { unsafe_pkg: has_unsafe_block(prog), lo, shared, snap }

@@ -811,12 +811,23 @@ impl<'a> Vm<'a> {
                         continue;
                     }
                     let ps = func.params();
-                    let argv: Vec<i128> = (0..*argn as usize)
+                    let mut argv: Vec<i128> = (0..*argn as usize)
                         .map(|k| {
                             let ent = f.pool[*argp as usize + k];
                             rdv!(ps[k].1, ent & 0xffff)
                         })
                         .collect();
+                    // `std.tls` (OpenSSL): VM のソケットの記述子は仮想なので、`SSL_set_fd` には実際の OS の記述子を渡す。
+                    if func.link.as_deref().map_or(false, |l| l.ends_with(":SSL_set_fd")) && argv.len() == 2 {
+                        use std::os::fd::AsRawFd;
+                        let real = match self.socks.get(&(argv[1] as i32 as i128)) {
+                            Some(NetSock::Stream(st)) => st.as_raw_fd(),
+                            Some(NetSock::Listener(l)) => l.as_raw_fd(),
+                            Some(NetSock::Udp(u)) => u.as_raw_fd(),
+                            None => -1,
+                        };
+                        argv[1] = real as i128;
+                    }
                     // C から呼び戻された (コールバック) とき、この `Vm` の上にフレームを積む。
                     self.top = base + f.nslots as usize;
                     let prev = CUR_VM.with(|c| c.replace(self as *mut Vm<'a> as *mut Vm<'static>));
