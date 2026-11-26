@@ -664,6 +664,8 @@ impl Interp {
                 let s = self.display_str(&a0)?;
                 self.write_out(&s);
                 self.write_out("\n");
+                // ネイティブと同じく 1 行ごとに流す (SIGTERM で出力を失わない。S-11)。
+                let _ = std::io::Write::flush(&mut self.out);
                 Ok(ok(Val::Unit))
             }
             // 標準エラーへ書く (1 回の書き込みで書いた長さ)。KIR の `FsWrite` (fd 2) と同じ結果。

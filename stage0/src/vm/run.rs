@@ -269,7 +269,8 @@ impl<'a> Vm<'a> {
         match fd {
             1 => {
                 self.out.extend_from_slice(bytes);
-                if self.out.len() >= 1 << 16 {
+                // ネイティブは 1 行ごとに書くので、同じく改行で終わる書き込みのたびに流す (SIGTERM で出力を失わない。S-11)。
+                if self.out.len() >= 1 << 16 || bytes.last() == Some(&b'\n') {
                     self.flush();
                 }
                 Ok(())

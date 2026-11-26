@@ -198,6 +198,7 @@ pub const EXPLAIN: &[(&str, &str)] = &[
     ("E9021", r#"`kasane.toml` と `kasane.lock` の依存集合が食い違う(`ksn update`)。"#),
     ("E9012", r#"`[unsafe] modules` が不正(配列でない、モジュール名でない、自パッケージのモジュールでない)。"#),
     ("E9030", r#"`entry` が未指定(ライブラリ)で `ksn run` した、またはentry関数が存在しない。"#),
+    ("E9031", r#"`ksn debug` は木走査で動き、手書きの `impl core.ops.Drop` を呼べない (黙って飛ばすことになる)。手書きの Drop があるパッケージ (依存を含む) は、デバッグを拒む。`ksn run` (VM) か `ksn test` で確かめる。"#),
     ("E9040", r#"この参照実装が対応していない機能(ネイティブコード生成など)。`ksn build --release` で、ネイティブ実行ファイルが作れなかった(KIR に下ろせない・clang が無い・clang が失敗した など)ときにも出る。リリースはインタプリタ同梱のバンドルへ退避せず終了コード 1 で止まる。退避を許すなら `--allow-bundle` を付ける。デバッグ (`--release` なし) は理由を出してバンドルへ退避する。`[native]` の C のライブラリ(3.8)は wasm32(`--target wasm32-unknown-unknown`)と `--backend c` へリンクできず、ここでも止まる。"#),
     ("W9040", r#"`ksn check --native` が出す非致命の警告 (通常の `ksn check` は出さない)。この関数はネイティブ (`ksn build --release`) の KIR に下ろせない。理由は `(関数名)` の後ろに出る。`ksn build --release` はこれで E9040 により止まる。直すか、その機能を使わない形にする。終了コードには影響しない。"#),
 ];
