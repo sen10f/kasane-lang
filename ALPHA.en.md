@@ -104,7 +104,7 @@ Output: `double: 4`. At the end of the build, `built: target/release/hello (nati
 ## 5. Where the documentation is
 
 - Cheat sheet (a list of how to write things, with error examples such as E0042 and the correct forms): `docs/en/cheatsheet.md` (Japanese: `チートシート.md`)
-- Language specification: `Kasane 簡易仕様書.md` (the grammar is in `spec/grammar.ebnf`, the standard library API in `spec/stdlib/`)
+- Grammar: `spec/grammar.ebnf`; standard library API: `spec/stdlib/`
 - Tutorial (three worked examples): `docs/en/tutorial.md`
 - Known limitations: `docs/en/known-limitations.md`
 - Explanation of diagnostic codes: `ksn explain <code>` (for example `ksn explain E0042`)

@@ -100,7 +100,7 @@ ksn build --release
 ## 5. ドキュメントの場所
 
 - チートシート（書き方の一覧、E0042 などの誤り例と正しい書き方）: `チートシート.md`
-- 言語仕様: `Kasane 簡易仕様書.md`（文法は `spec/grammar.ebnf`、標準ライブラリ API は `spec/stdlib/`）
+- 文法: `spec/grammar.ebnf`、標準ライブラリ API: `spec/stdlib/`
 - チュートリアル（3 つの実例）: `docs/tutorial.md`
 - 既知の制限: `docs/known-limitations.md`
 - 診断コードの説明: `ksn explain <コード>`（例 `ksn explain E0042`）

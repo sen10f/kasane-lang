@@ -104,7 +104,6 @@ For the concrete connection steps on the editor side, follow the documentation o
 - [Tutorial](docs/en/tutorial.md)
 - [Known limitations](docs/en/known-limitations.md)
 - [Changelog](CHANGELOG.md)
-- [Language specification](<Kasane 簡易仕様書.md>)
 - [Implementation plan](docs/plan/実装計画.md)
 - [Cheat sheet](docs/en/cheatsheet.md)
 
